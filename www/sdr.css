@@ -1,0 +1,109 @@
+/* R2T2 WebSDR: additions to afu-style.css and remote.css (both copies from
+   afu.tools). Only what the remote station page does not have; own classes
+   use the sdr- prefix, nothing here restyles a class from the copies. */
+
+/* station name in the header: the remote station has a station picker there */
+.sdr-stationsname {
+  background: #151b35; color: #eef0fa; border: 1px solid #2a3358; border-radius: 6px;
+  padding: 0.25rem 0.7rem; font-size: 1.1rem; font-weight: 600; max-width: 100%;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+
+/* light/dark key as in the afu-remote direct-access header (there inline, see
+   station/afu_remote/local.py): the page follows the system, data-theme overrides it */
+.theme-open { display: inline-flex; align-items: center; padding: 0.42rem 0.6rem; font-size: 0.9rem; cursor: pointer;
+  border: 1px solid var(--border); border-radius: 999px; background: var(--card-bg); color: inherit; }
+.theme-open:hover { border-color: var(--accent); background: var(--card-hover); }
+:root[data-theme="light"] { color-scheme: light; --bg: #f4f6fb; --bg2: #ffffff; --fg: #1a2235; --muted: #5b6478; --accent: #2f6fed;
+  --accent2: #7c5cff; --border: #d6dbe8; --card-bg: #ffffff; --card-hover: rgba(47, 111, 237, 0.06);
+  --header-bg: rgba(255, 255, 255, 0.85); --on-accent: #ffffff; --shadow: 0 10px 30px rgba(20, 30, 60, 0.10); }
+:root[data-theme="dark"] { color-scheme: dark; --bg: #0a0e1f; --bg2: #151b35; --fg: #eef0fa; --muted: #8a93b3; --accent: #6aa6ff;
+  --accent2: #a78bfa; --border: #2a3358; --card-bg: linear-gradient(180deg, rgba(28, 36, 68, 0.85), rgba(21, 27, 53, 0.85));
+  --card-hover: rgba(106, 166, 255, 0.09); --header-bg: rgba(10, 14, 31, 0.72); --on-accent: #0a0e1f;
+  --shadow: 0 10px 30px rgba(0, 0, 0, 0.35); }
+
+/* account button and menu as on afu.tools (there inline in builder/navigation.py) */
+.konto-open { display: inline-flex; align-items: center; gap: 0.4rem; padding: 0.42rem 0.7rem;
+  font-size: 0.9rem; border: 1px solid var(--border); border-radius: 999px; background: var(--card-bg);
+  color: inherit; text-decoration: none; font-family: inherit; cursor: pointer; }
+.konto-open:hover { border-color: var(--accent); background: var(--card-hover); }
+.konto-menu { position: relative; }
+.konto-menu > summary { list-style: none; cursor: pointer; gap: 0.3rem; }
+.konto-menu > summary::-webkit-details-marker { display: none; }
+.konto-menu > summary .konto-pfeil { font-size: 0.7rem; opacity: 0.7; }
+.konto-menu[open] > summary { border-color: var(--accent); background: var(--card-hover); }
+.konto-menu-inhalt {
+  position: absolute; top: calc(100% + 0.5rem); right: 0; z-index: 40; min-width: 15rem;
+  display: grid; gap: 0.15rem; padding: 0.4rem;
+  background: var(--bg2); border: 1px solid var(--border); border-radius: 12px; box-shadow: var(--shadow);
+}
+.konto-menu-inhalt a, .konto-menu-inhalt button {
+  display: flex; align-items: center; gap: 0.55rem; width: 100%; box-sizing: border-box;
+  padding: 0.5rem 0.6rem; border: 0; border-radius: 9px; background: transparent;
+  color: var(--fg); font: inherit; font-size: 0.93rem; text-align: left; text-decoration: none; cursor: pointer;
+}
+.konto-menu-inhalt a:hover, .konto-menu-inhalt button:hover { background: var(--card-hover); color: var(--fg); }
+.konto-menu-inhalt .ico { font-size: 1.1rem; flex: none; }
+.konto-menu-inhalt strong { display: block; font-weight: 600; }
+.konto-menu-inhalt em { display: block; font-style: normal; color: var(--muted); font-size: 0.82rem; }
+
+/* meter row: one bar, values on the right */
+.sdr-meter { grid-template-columns: minmax(0, 1fr) auto; }
+@media (max-width: 800px) { .sdr-meter { grid-template-columns: minmax(0, 1fr); } }
+#meter-werte { display: flex; flex-wrap: wrap; gap: 0.3rem 1.2rem; font-size: 0.8rem; }
+#meter-werte strong { color: var(--fg); font-weight: 600; }
+
+/* waterfall: the canvas sits in a box so the passband can lie over it */
+.sdr-wf-flaeche { position: relative; flex: 1 1 auto; display: flex; flex-direction: column; min-height: 14rem; }
+.sdr-wf-flaeche .rm-wasserfall { min-height: 0; }
+.rm-wf .rm-spektrum { height: 7rem; cursor: crosshair; }
+.sdr-passband {
+  position: absolute; top: 0; bottom: 0; pointer-events: none;
+  background: rgba(245, 217, 10, 0.12);
+  border-left: 1px solid rgba(245, 217, 10, 0.8); border-right: 1px solid rgba(245, 217, 10, 0.8);
+}
+.rm-wf-panel > .btn-sm { justify-self: start; }
+/* /remote has a button row between waterfall and boxes; here the boxes follow directly */
+.rm-wf-zeile + .rm-listen { margin-top: 0.7rem; }
+
+/* band scale: the part the waterfall shows */
+.sdr-legende-wf { background: color-mix(in srgb, var(--accent2) 45%, transparent); }
+.sdr-ausschnitt { fill: color-mix(in srgb, var(--accent2) 22%, transparent); }
+
+/* dialogs */
+.sdr-felder { display: grid; gap: 0.8rem; margin-bottom: 0.4rem; }
+.rf-dialog-fuss.btn-row { justify-content: flex-end; }
+.note.fehler { border-left-color: #ef4444; color: var(--fg); background: color-mix(in srgb, #ef4444 8%, var(--card-hover)); }
+.rm-einstellungen .note { margin: 0 0 0.8rem; }
+.sdr-leer { color: var(--muted); }
+.sdr-plus { margin-top: 0.8rem; }
+.data-wrap:has(> table.data > tbody:empty) { display: none; }
+.sdr-antennen { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0.8rem; }
+@media (max-width: 700px) { .sdr-antennen { grid-template-columns: minmax(0, 1fr); } }
+.sdr-zwei { display: grid; grid-template-columns: 1fr 1fr; gap: 0.6rem; }
+
+/* chat: guests are marked; the message field looks like every other field */
+.sdr-chat-gast { color: var(--muted); font-weight: 400; }
+#chat-text {
+  background: var(--bg2); color: var(--fg); border: 1px solid var(--border); border-radius: 9px;
+  padding: 0.5rem 0.7rem; font: inherit; font-size: 0.95rem;
+}
+#chat-text:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
+
+/* footer: version with the GitHub mark */
+.sdr-version { display: flex; align-items: center; gap: 0.5rem; }
+.sdr-github { display: inline-flex; color: var(--muted); }
+.sdr-github:hover { color: var(--fg); }
+
+/* ------------------------------------------- embedded: waterfall only */
+html.embed, html.embed body { height: 100%; }
+html.embed body { background: #05070f; overflow: hidden; }
+html.embed .topbar, html.embed .footer, html.embed .skip, html.embed .rm-kopf, html.embed .rm-ribbon,
+html.embed .rm-meter, html.embed .rm-wf-panel, html.embed .rm-listen, html.embed dialog { display: none !important; }
+html.embed main, html.embed .rm-app { height: 100%; margin: 0; width: 100%; max-width: none; }
+html.embed .rm-wf-zeile { display: block; height: 100%; }
+html.embed .rm-wf { height: 100%; }
+html.embed .rm-wf-skala { border-radius: 0; border-left: 0; border-right: 0; border-top: 0; }
+html.embed .rm-wf .rm-spektrum { height: 24%; min-height: 3rem; }
+html.embed .sdr-wf-flaeche { min-height: 0; }
+html.embed .rm-wasserfall { border-radius: 0; }

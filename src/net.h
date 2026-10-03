@@ -23,8 +23,16 @@ typedef struct client {
     long last_rx;      /* monotonic seconds of the last received data */
 
     /* application state */
+    char user[32];     /* logged-in account, "" = anonymous */
+    int role;          /* ROLE_* from auth.h */
+    long chat_t;       /* chat rate limit: start of the current minute ... */
+    int chat_n;        /* ... and messages in it */
+    char nonce[33];    /* open login challenge, "" = none */
+    char nonce_user[32];
+    long nonce_t;
     int view;          /* waterfall view, -1 = none */
     int rx;            /* receiver for audio, -1 = none */
+    int input;         /* antenna input of that receiver, 0 = not set */
     int listening;
     double freq;
     int mode;

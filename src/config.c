@@ -2,6 +2,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 #include "config.h"
 
@@ -18,6 +19,7 @@ static char *trim(char *s)
 static void copy(char *dst, size_t n, const char *src)
 {
     snprintf(dst, n, "%s", src);
+    utf8_trim(dst);
 }
 
 /* "name, centre_hz [, input [, mode]]" */
@@ -80,6 +82,20 @@ void config_defaults(config_t *c)
     c->clock = 122.88e6;
     c->wf_fps = 10;
     c->max_clients = 20;
+    copy(c->state_dir, sizeof(c->state_dir), "/var/lib/r2t2sdr");
+    c->chat = 2;
+}
+
+/* station settings changed in the web interface, stored apart from the config file */
+static const char *STATION_KEYS[] = { "title", "callsign", "location", "locator", "access", "chat",
+                                      "gain1", "gain2", "att1", "att2", NULL };
+
+static int station_key(const char *k)
+{
+    for (int i = 0; STATION_KEYS[i]; i++)
+        if (!strcmp(k, STATION_KEYS[i]))
+            return 1;
+    return 0;
 }
 
 void config_default_bands(config_t *c)
@@ -91,7 +107,7 @@ void config_default_bands(config_t *c)
     }
 }
 
-int config_load(config_t *c, const char *path)
+static int load_file(config_t *c, const char *path, int station_only)
 {
     FILE *f = fopen(path, "r");
     if (!f)
@@ -114,8 +130,13 @@ int config_load(config_t *c, const char *path)
         }
         *eq = 0;
         char *k = trim(s), *v = trim(eq + 1);
+        if (station_only && !station_key(k))
+            continue;
 
         if (!strcmp(k, "port"))                c->port = atoi(v);
+        else if (!strcmp(k, "state_dir"))      copy(c->state_dir, sizeof(c->state_dir), v);
+        else if (!strcmp(k, "access"))         c->access = !strcmp(v, "login");
+        else if (!strcmp(k, "chat"))           c->chat = !strcmp(v, "off") ? 0 : !strcmp(v, "login") ? 1 : 2;
         else if (!strcmp(k, "www"))            copy(c->www, sizeof(c->www), v);
         else if (!strcmp(k, "interface"))      copy(c->ifname, sizeof(c->ifname), v);
         else if (!strcmp(k, "title"))          copy(c->title, sizeof(c->title), v);
@@ -141,5 +162,38 @@ int config_load(config_t *c, const char *path)
         c->max_clients = MAX_CLIENTS;
     if (c->wf_fps < 1)
         c->wf_fps = 1;
+    return 0;
+}
+
+int config_load(config_t *c, const char *path)
+{
+    return load_file(c, path, 0);
+}
+
+int config_load_station(config_t *c)
+{
+    char path[300];
+    snprintf(path, sizeof(path), "%s/station.conf", c->state_dir);
+    return load_file(c, path, 1);
+}
+
+int config_save_station(const config_t *c)
+{
+    char path[300], tmp[310];
+    snprintf(path, sizeof(path), "%s/station.conf", c->state_dir);
+    snprintf(tmp, sizeof(tmp), "%s.tmp", path);
+    FILE *f = fopen(tmp, "w");
+    if (!f)
+        return -1;
+    fprintf(f, "# written by r2t2sdr (Verwaltung > Station), overrides /etc/r2t2sdr.conf\n");
+    fprintf(f, "title = %s\ncallsign = %s\nlocation = %s\nlocator = %s\naccess = %s\nchat = %s\n",
+            c->title, c->callsign, c->location, c->locator, c->access ? "login" : "open",
+            c->chat == 0 ? "off" : c->chat == 1 ? "login" : "all");
+    fprintf(f, "gain1 = %d\ngain2 = %d\natt1 = %d\natt2 = %d\n", c->gain[0], c->gain[1], c->att[0], c->att[1]);
+    int ok = fclose(f) == 0;
+    if (!ok || rename(tmp, path) < 0) {
+        unlink(tmp);
+        return -1;
+    }
     return 0;
 }

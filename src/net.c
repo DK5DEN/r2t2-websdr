@@ -219,11 +219,14 @@ static void http_file(client_t *c, const char *www, const char *path)
     }
     fclose(f);
 
-    char h[256];
+    /* pages are always fresh; style sheets, scripts and images carry ?v= stamps in the page */
+    const char *e = strrchr(path, '.');
+    const char *cache = e && !strcmp(e, ".html") ? "no-cache" : "public, max-age=604800";
+    char h[300];
     int hl = snprintf(h, sizeof(h),
                       "HTTP/1.1 200 OK\r\nContent-Type: %s\r\nContent-Length: %ld\r\n"
-                      "Cache-Control: no-cache\r\nConnection: close\r\n\r\n",
-                      mime(path), n);
+                      "Cache-Control: %s\r\nConnection: close\r\n\r\n",
+                      mime(path), n, cache);
     net_queue(c, h, hl);
     net_queue(c, buf, n);
     free(buf);

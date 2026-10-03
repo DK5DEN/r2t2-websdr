@@ -23,6 +23,9 @@ typedef struct {
     int att[2];         /* attenuator per ADC in dB, 0..31 */
     int wf_fps;
     int max_clients;
+    char state_dir[256];  /* accounts, sessions, bookmarks, station settings */
+    int access;           /* 0 = everyone may listen, 1 = only logged-in users */
+    int chat;             /* 0 = off, 1 = logged-in users, 2 = everyone */
     band_cfg_t bands[MAX_BANDS];
     int nbands;
 } config_t;
@@ -30,5 +33,7 @@ typedef struct {
 void config_defaults(config_t *c);
 void config_default_bands(config_t *c);
 int config_load(config_t *c, const char *path);
+int config_load_station(config_t *c);
+int config_save_station(const config_t *c);
 
 #endif

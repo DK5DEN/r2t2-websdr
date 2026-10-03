@@ -1,0 +1,553 @@
+/* Copy of site/remote.css from afu.tools (stand 2026-10-01). Do not edit here, see afu-style.css. */
+/* Fernbedienung (/remote). Layout after the tool-page pattern of the design
+   guide: dark header with the frequency, meters, waterfall with a control
+   panel, button row, then the rig's control groups as boxes.
+   Own classes only (rm-), colours from the tokens in style.css. */
+
+.rm-app { margin-top: 1rem; --rm-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+.rm-app .note { margin-bottom: 0.8rem; }
+.rm-app .mono, .rm-einstellungen .mono { font-family: var(--rm-mono); }
+
+/* ------------------------------------------------------------ header */
+.rm-kopf {
+  display: grid; grid-template-columns: auto 1fr auto; gap: 1rem 2rem; align-items: start;
+  background: #0a0e1f; color: #eef0fa; border: 1px solid var(--border); border-radius: var(--radius);
+  padding: 0.8rem 1.2rem; margin-bottom: 0.7rem;
+}
+.rm-kopf-freq { display: grid; gap: 0.3rem; }
+.rm-vfo-zeile { display: flex; align-items: center; gap: 0.6rem; }
+.rm-vfo-name { font-family: var(--rm-mono); color: #8a93b3; font-weight: 700; width: 1ch; }
+.rm-freq {
+  font-family: var(--rm-mono); font-size: 2.4rem; font-weight: 700; line-height: 1.1;
+  letter-spacing: 0.02em; color: #eef0fa; border: 1px solid transparent; border-radius: 6px;
+  padding: 0.05rem 0.35rem; cursor: ns-resize; user-select: none; white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+.rm-freq.klein { font-size: 1.25rem; color: #b8c0de; }
+.rm-freq:focus { outline: none; border-color: var(--accent); }
+.rm-freq .ziffer { display: inline-block; border-radius: 3px; }
+.rm-freq .ziffer:hover { background: #1c2547; }
+.rm-freq .trenner { color: #6b7599; }
+.rm-freq .fuehrend { color: #3a4468; }
+.rm-freq input {
+  font: inherit; letter-spacing: inherit; background: #151b35; color: #eef0fa; border: 0;
+  border-radius: 4px; width: 11ch; padding: 0;
+}
+.rm-freq input:focus { outline: none; }
+.rm-modus {
+  background: #2f6fed; color: #fff; border: 0; border-radius: 6px; padding: 0.3rem 0.5rem;
+  font: inherit; font-weight: 700; font-size: 0.85rem; letter-spacing: 0.04em;
+}
+.rm-modus.klein { background: #151b35; border: 1px solid #2a3358; font-size: 0.78rem; }
+.rm-kopf-station { text-align: center; display: grid; gap: 0.25rem; justify-items: center; }
+.rm-stationswahl {
+  background: #151b35; color: #eef0fa; border: 1px solid #2a3358; border-radius: 6px;
+  padding: 0.25rem 0.5rem; font: inherit; font-size: 1.1rem; font-weight: 600; max-width: 100%;
+}
+.rm-geraet { color: #8a93b3; font-size: 0.9rem; }
+.rm-utc { font-family: var(--rm-mono); font-size: 1.3rem; font-weight: 600; }
+.rm-kopf-status { display: grid; gap: 0.45rem; justify-items: end; }
+.rm-status-knoepfe { display: flex; flex-wrap: wrap; gap: 0.4rem; align-items: center; justify-content: flex-end; }
+.rm-kopf .btn-sm { background: #151b35; color: #eef0fa; border-color: #2a3358; }
+.rm-kopf .btn-sm:hover { border-color: var(--accent); }
+.rm-kopf .btn-sm[aria-pressed="true"] { background: #27af57; border-color: #27af57; color: #fff; }
+.rm-rxtx, .rm-lampe {
+  padding: 0.3rem 0.9rem; border-radius: 6px; border: 1px solid #2a3358; font-size: 0.85rem;
+  font-weight: 700; letter-spacing: 0.05em; min-width: 3.6rem; text-align: center;
+}
+.rm-rxtx { background: #27af57; border-color: #27af57; color: #fff; }
+.rm-rxtx.tx { background: #ef4444; border-color: #ef4444; }
+.rm-rxtx.aus { background: transparent; color: #8a93b3; }
+.rm-lampe.an { color: #27af57; border-color: #27af57; }
+.rm-lampe.aus { color: #8a93b3; }
+.rm-lampe.warn { color: #d6a10b; border-color: #d6a10b; }
+.rm-bediener { font-size: 0.8rem; color: #8a93b3; min-height: 1em; text-align: right; }
+@media (max-width: 900px) {
+  .rm-kopf { grid-template-columns: 1fr; }
+  .rm-kopf-freq { justify-items: center; }
+  .rm-kopf-status { justify-items: center; }
+  .rm-status-knoepfe { justify-content: center; }
+  .rm-bediener { text-align: center; }
+  .rm-freq { font-size: 1.9rem; }
+}
+
+/* ------------------------------------------------------------ meters */
+.rm-meter {
+  display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 2fr) auto; gap: 0.6rem 1.4rem;
+  align-items: center; border: 1px solid var(--border); border-radius: 9px; background: var(--bg2);
+  padding: 0.55rem 0.8rem; margin-bottom: 0.7rem;
+}
+@media (max-width: 800px) { .rm-meter { grid-template-columns: minmax(0, 1fr); } }
+.rm-meter-kopf { display: flex; justify-content: space-between; font-size: 0.8rem; color: var(--muted); margin-bottom: 0.2rem; }
+.rm-meter-kopf .mono { color: var(--fg); font-weight: 600; }
+/* Meter bars with some depth: a recessed track, a lit fill with a glossy
+   top edge and a soft glow, and LED segments laid over both. The colour
+   zones stay fixed to the scale (background-size on the full width), so a
+   short bar is green and only a long one reaches yellow and red. */
+.rm-balken {
+  position: relative; height: 0.9rem; border-radius: 5px; overflow: hidden;
+  background: linear-gradient(180deg, #05070f, #111731 60%, #0b1024);
+  border: 1px solid #1f2849;
+  box-shadow: inset 0 2px 4px rgba(0, 0, 0, 0.7), 0 1px 0 rgba(255, 255, 255, 0.05);
+}
+.rm-balken > div {
+  --voll: 0;
+  height: 100%; width: 0; border-radius: 4px 2px 2px 4px;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.45), rgba(255, 255, 255, 0.08) 45%, rgba(0, 0, 0, 0.25)),
+    linear-gradient(90deg, #1f9d4c 0, #3bd16f 45%, #e8b923 62%, #f08a24 78%, #ef4444 90%);
+  background-size: 100% 100%, var(--breite, 100vw) 100%;
+  box-shadow: 0 0 8px rgba(59, 209, 111, 0.35);
+  transition: width 0.12s linear;
+}
+.rm-balken::after {
+  content: ""; position: absolute; inset: 0; pointer-events: none;
+  background: repeating-linear-gradient(90deg, transparent 0 7px, rgba(5, 7, 15, 0.55) 7px 9px);
+}
+#rm-balken-s { height: 1.1rem; }
+#rm-balken-s > div {
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.45), rgba(255, 255, 255, 0.08) 45%, rgba(0, 0, 0, 0.25)),
+    linear-gradient(90deg, #2f6fed, #5b7cff 55%, #9b6bff);
+  box-shadow: 0 0 10px rgba(91, 124, 255, 0.45);
+}
+.rm-skala { display: flex; justify-content: space-between; font-size: 0.7rem; color: var(--muted); padding: 0.1rem 0.2rem 0; }
+.rm-meter-klein { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0.35rem 1rem; }
+.rm-meter-klein > div { display: grid; grid-template-columns: 2.6rem minmax(0, 1fr) 4.6rem; align-items: center; gap: 0.4rem; font-size: 0.75rem; color: var(--muted); }
+.rm-mz { text-align: right; color: var(--fg); font-size: 0.75rem; white-space: nowrap; }
+.rm-meter-werte { font-size: 0.78rem; color: var(--muted); white-space: nowrap; }
+
+/* --------------------------------------------------------- waterfall */
+.rm-wf-zeile { display: grid; grid-template-columns: minmax(0, 1fr) 15rem; gap: 0.7rem; align-items: stretch; }
+/* Ersetzt ein externer Wasserfall den eigenen (AFU-22), bleibt das Schnellregler-Panel
+   trotzdem in seiner Spalte, statt in die frei gewordene erste zu rutschen. */
+.rm-wf-panel { grid-column: 2; }
+@media (max-width: 800px) { .rm-wf-zeile { grid-template-columns: minmax(0, 1fr); } .rm-wf-panel { grid-column: 1; } }
+.rm-wf { min-width: 0; display: flex; flex-direction: column; position: relative; }
+.rm-wf-skala {
+  position: relative; height: 1.3rem; font-size: 0.72rem; color: var(--muted);
+  background: var(--bg2); border: 1px solid var(--border); border-bottom: 0; border-radius: 9px 9px 0 0;
+}
+.rm-wf-skala span { position: absolute; top: 0.2rem; transform: translateX(-50%); white-space: nowrap; }
+.rm-spektrum { display: block; width: 100%; height: 5rem; background: #05070f; }
+.rm-wasserfall {
+  display: block; width: 100%; flex: 1 1 auto; height: 0; min-height: 14rem; background: #000;
+  border-radius: 0 0 9px 9px; cursor: crosshair; image-rendering: pixelated;
+}
+.rm-wf-info {
+  position: absolute; right: 0.5rem; bottom: 0.4rem; font-size: 0.75rem; color: #eef0fa;
+  background: rgba(10, 14, 31, 0.75); padding: 0.1rem 0.4rem; border-radius: 4px; pointer-events: none;
+}
+.rm-wf-info:empty { display: none; }
+.rm-wf-panel { display: grid; gap: 0.6rem; align-content: start; border: 1px solid var(--border); border-radius: 9px; background: var(--bg2); padding: 0.7rem 0.8rem; }
+.rm-wf-panel .field input[type="range"] { min-width: 0; width: 100%; }
+.rm-wf-panel .field-hint { margin: 0; }
+#rm-schnell { display: grid; gap: 0.6rem; }
+
+/* externer Wasserfall (fremder SDR, z.B. OpenWebRX): tritt an die Stelle des
+   eigenen (AFU-22), darum dieselbe Spalte, Höhe und Breite wie .rm-wf. */
+.rm-extern-wf { grid-column: 1; min-width: 0; display: flex; flex-direction: column; position: relative; }
+.rm-extern-wf-kopf {
+  display: flex; align-items: center; justify-content: space-between; gap: 0.4rem 0.8rem;
+  height: 1.3rem; padding: 0 0.5rem; font-size: 0.72rem; color: var(--muted);
+  background: var(--bg2); border: 1px solid var(--border); border-bottom: 0; border-radius: 9px 9px 0 0;
+}
+.rm-extern-wf-kopf span:first-child { color: var(--fg); font-weight: 600; }
+.rm-extern-wf iframe { display: block; width: 100%; flex: 1 1 auto; height: 0; min-height: 19rem;
+  border: 1px solid var(--border); border-top: 0; border-radius: 0 0 9px 9px; background: #05070f; }
+
+/* ----------------------------------------------------------- buttons */
+.rm-tasten { display: flex; flex-wrap: wrap; gap: 0.4rem; align-items: center; margin: 0.7rem 0; }
+.rm-baender { display: flex; flex-wrap: wrap; gap: 0.3rem; }
+.rm-baender .btn-sm { min-width: 3.4rem; text-align: center; }
+.rm-baender .btn-sm[aria-current="true"] { border-color: var(--accent); color: var(--accent); font-weight: 700; }
+.rm-tasten-luft { flex: 1 1 auto; }
+.rm-tasten .btn-sm[disabled], .rm-tasten .btn[disabled] { opacity: 0.45; cursor: not-allowed; }
+.rm-ptt { min-width: 7rem; font-weight: 700; letter-spacing: 0.06em; touch-action: none; user-select: none; }
+.rm-ptt[aria-pressed="true"] { background: #ef4444; border-color: #ef4444; color: #fff; }
+.rm-tasten .halt { background: #ef4444; color: #fff; border-color: transparent; font-weight: 700; }
+.rm-tx-uhr { font-weight: 700; color: #ef4444; min-width: 4.5rem; text-align: right; }
+
+/* ---------------------------------------------------- control groups */
+/* Masonry: 4 px rows, each box spans its own height (set by mauern() in
+   remote.js), dense fill so short boxes stack next to tall ones. Fixed
+   column counts per width, as the design guide asks. */
+.rm-gruppen { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); grid-auto-rows: 4px;
+  grid-auto-flow: row dense; column-gap: 0.7rem; margin-bottom: 1.5rem; align-items: start; }
+@media (max-width: 1100px) { .rm-gruppen { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 700px) { .rm-gruppen { grid-template-columns: minmax(0, 1fr); } }
+.rm-gruppen > .rm-kasten { align-self: start; }
+.rm-listen:empty { display: none; }
+.rm-kasten { display: flex; flex-direction: column; min-width: 0; border: 1px solid var(--border); border-radius: 9px; background: var(--bg2); overflow: hidden; }
+.rm-kasten-kopf {
+  display: flex; align-items: center; padding: 0 0.6rem; height: 2.3rem; box-sizing: border-box;
+  font-size: 0.76rem; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); font-weight: 600;
+  border-bottom: 1px solid var(--border);
+}
+.rm-kasten-inhalt { display: grid; gap: 0.55rem; padding: 0.6rem 0.7rem 0.8rem; }
+.rm-kasten-inhalt .field { margin: 0; }
+/* Chat je Station: nur zwischen den Bedienern, nicht mit dem Gerät */
+.rm-chat-liste { display: flex; flex-direction: column; gap: 0.3rem; max-height: 12rem; overflow-y: auto;
+  font-size: 0.85rem; }
+.rm-chat-liste:empty::before { content: "Noch nichts geschrieben."; color: var(--muted); }
+.rm-chat-zeile { display: flex; flex-wrap: wrap; gap: 0.35rem; align-items: baseline; }
+.rm-chat-wer { font-weight: 600; color: var(--fg); }
+.rm-chat-wer.rm-chat-eigen { color: var(--accent); }
+.rm-chat-zeit { font-size: 0.72rem; color: var(--muted); }
+.rm-chat-text { flex-basis: 100%; }
+.rm-chat-form { display: flex; gap: 0.4rem; }
+.rm-chat-form input { flex: 1 1 auto; min-width: 0; }
+/* Eigenes Logbuch (AFU-17) */
+.rm-lb-vorbelegt { display: flex; flex-wrap: wrap; gap: 0.9rem; font-size: 0.85rem; color: var(--muted); }
+.rm-logbuch-liste { display: flex; flex-direction: column; gap: 0.25rem; max-height: 14rem; overflow-y: auto;
+  font-size: 0.85rem; }
+.rm-logbuch-zeile { display: flex; flex-wrap: wrap; gap: 0.6rem; align-items: baseline;
+  border-top: 1px solid var(--border); padding-top: 0.25rem; }
+.rm-logbuch-stand { margin-left: auto; font-size: 0.75rem; }
+.rm-logbuch-wartet { color: var(--muted); }
+.rm-logbuch-uebertragen { color: #10b981; }
+.rm-logbuch-fehler, .rm-logbuch-ohne_konto { color: #ef4444; }
+.rm-knopfreihe { display: flex; flex-wrap: wrap; gap: 0.35rem; }
+.rm-schalter-reihe { display: flex; flex-wrap: wrap; gap: 0.35rem; }
+.rm-an {
+  font: inherit; font-size: 0.82rem; cursor: pointer; padding: 0.3rem 0.7rem; border-radius: 7px;
+  border: 1px solid var(--border); background: var(--bg); color: var(--fg);
+}
+.rm-an:hover { border-color: var(--accent); }
+.rm-an[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: #fff; }
+.rm-regler label { display: flex; justify-content: space-between; gap: 0.5rem; }
+.rm-regler label .einheit { font-family: var(--rm-mono); color: var(--fg); }
+.rm-regler input[type="range"] { width: 100%; }
+.rm-app [data-tx="1"]:disabled, .rm-app .gesperrt { opacity: 0.45; cursor: not-allowed; }
+
+/* ---------------------------------------------------------- settings */
+.rm-einstellungen {
+  width: min(92vw, 62rem); max-height: 92vh; overflow: hidden; box-sizing: border-box;
+  border: 1px solid var(--border); border-radius: var(--radius); padding: 1rem 1.4rem 1.4rem;
+  background: var(--bg2); color: var(--fg); box-shadow: var(--shadow);
+}
+.rm-einstellungen::backdrop, .rm-klein-dialog::backdrop { background: rgba(0, 0, 0, 0.55); }
+.rm-dialog-kopf { display: flex; align-items: center; justify-content: space-between; gap: 1rem; margin-bottom: 0.6rem; }
+.rm-dialog-kopf h2 { margin: 0; }
+.rm-tabs { display: flex; border-bottom: 1px solid var(--border); margin: 0 0 0.8rem; overflow-x: auto; }
+.rm-tab {
+  font: inherit; cursor: pointer; padding: 0.55rem 1.2rem; margin-bottom: -1px; white-space: nowrap;
+  border: 1px solid transparent; border-bottom: 0; border-radius: 8px 8px 0 0;
+  background: transparent; color: var(--muted);
+}
+.rm-tab:hover { color: var(--fg); }
+.rm-tab[aria-selected="true"] { color: var(--fg); font-weight: 600; background: var(--bg2); border-color: var(--border); border-bottom: 1px solid var(--bg2); }
+.rm-tab-seite { height: min(66vh, 44rem); overflow-y: auto; padding-right: 0.3rem; }
+.rm-tab-seite[data-tab="log"] { display: flex; flex-direction: column; overflow: hidden; }
+.rm-tab-seite[data-tab="log"][hidden] { display: none; }
+.rm-log { flex: 1 1 auto; min-height: 8rem; margin: 0; overflow: auto; font-size: 0.8rem; background: var(--bg); border: 1px solid var(--border); border-radius: 7px; padding: 0.5rem; white-space: pre-wrap; }
+.rm-einstellungen h3 { margin-top: 1.2rem; }
+.rm-einstellungen .note.warn { border-color: #d6a10b; }
+.rm-zeile { display: flex; flex-wrap: wrap; gap: 0.8rem 1.1rem; align-items: end; margin: 0.4rem 0 0.6rem; }
+.rm-schalter { display: inline-flex; align-items: center; gap: 0.4rem; font-size: 0.92rem; }
+.rm-schalter input { accent-color: var(--accent); }
+.rm-anleitung li { margin-bottom: 0.35rem; }
+.rm-anleitung code, .rm-einstellungen code { font-size: 0.85em; }
+.rm-klein-dialog { width: min(92vw, 36rem); max-height: 90vh; overflow-y: auto; }
+.rm-toml { background: var(--bg); border: 1px solid var(--border); border-radius: 7px; padding: 0.6rem; font-size: 0.8rem; overflow-x: auto; }
+.rm-stationen-tabelle td .rm-knopfreihe { flex-wrap: nowrap; }
+.rm-punkt { display: inline-block; width: 0.6rem; height: 0.6rem; border-radius: 50%; background: #6b7599; margin-right: 0.4rem; }
+.rm-punkt.an { background: #27af57; }
+
+/* -------------------------------------------------------- Stationslog (AFU-16) */
+.rm-slog-tabs { display: flex; gap: 0.4rem; border-bottom: 1px solid var(--border); margin: 0.6rem 0; }
+.rm-slog-tab {
+  font: inherit; cursor: pointer; padding: 0.3rem 0.8rem; font-size: 0.88rem; margin-bottom: -1px;
+  border: 1px solid transparent; border-bottom: 0; border-radius: 8px 8px 0 0;
+  background: transparent; color: var(--muted);
+}
+.rm-slog-tab:hover { color: var(--fg); }
+.rm-slog-tab[aria-selected="true"] { color: var(--fg); font-weight: 600; background: var(--bg2); border-color: var(--border); border-bottom: 1px solid var(--bg2); }
+.rm-slog-th { cursor: pointer; user-select: none; white-space: nowrap; }
+.rm-slog-th:hover { color: var(--accent); }
+.rm-slog-th .rm-slog-pfeil { display: inline-block; width: 0.9em; opacity: 0.7; }
+.rm-slog-fuss { display: flex; flex-wrap: wrap; align-items: center; gap: 0.6rem 1rem; margin: 0.6rem 0; font-size: 0.88rem; }
+.rm-slog-fuss select { font: inherit; }
+.rm-slog-leer { color: var(--muted); }
+
+/* ------------------------------------------------------------ toasts */
+.rm-toasts { position: fixed; right: 1rem; bottom: 1rem; display: grid; gap: 0.4rem; z-index: 1000; max-width: min(92vw, 26rem); }
+.rm-toast { padding: 0.55rem 0.8rem; border-radius: 8px; border: 1px solid var(--border); background: var(--bg2); color: var(--fg); box-shadow: var(--shadow); font-size: 0.9rem; border-left-width: 4px; }
+.rm-toast.gut { border-left-color: #27af57; }
+.rm-toast.warnung { border-left-color: #d6a10b; }
+.rm-toast.fehler { border-left-color: #ef4444; }
+.rm-toast.info { border-left-color: var(--accent); }
+@media (max-width: 480px) {
+  .rm-kopf { padding: 0.7rem 0.6rem; }
+  .rm-freq { font-size: 1.55rem; padding: 0.05rem 0.15rem; }
+  .rm-freq.klein { font-size: 1.05rem; }
+  .rm-vfo-zeile { gap: 0.35rem; }
+  .rm-modus { padding: 0.25rem 0.3rem; font-size: 0.78rem; }
+}
+
+/* Direct access (page served by afu-remote itself) */
+.rm-lokal-hinweis { color: var(--muted); font-size: 0.85rem; margin-left: auto; }
+.rm-lokal-hinweis + .bar-actions { margin-left: 1rem; }
+.rm-laut-zeile { display: flex; align-items: center; gap: 0.5rem; }
+.rm-laut-zeile input[type="range"] { flex: 1 1 auto; min-width: 0; }
+.rm-an#rm-stumm[aria-pressed="true"] { background: #ef4444; border-color: #ef4444; }
+
+/* ------------------------------------------------ step, control, tx bar */
+.rm-schritt-zeile { display: flex; align-items: center; gap: 0.35rem; padding-left: 1.6rem; }
+.rm-schrittwahl { background: #151b35; color: #eef0fa; border: 1px solid #2a3358; border-radius: 6px; padding: 0.2rem 0.4rem; font: inherit; font-size: 0.8rem; }
+.rm-kopf .rm-schritt-zeile .btn-sm { padding: 0.15rem 0.6rem; }
+.rm-bedienung { display: flex; flex-wrap: wrap; align-items: center; gap: 0.4rem; justify-content: flex-end; font-size: 0.85rem; color: #eef0fa; }
+.rm-bedienung #rm-bedienung-text { font-weight: 600; }
+@media (max-width: 900px) { .rm-bedienung { justify-content: center; } .rm-schritt-zeile { padding-left: 0; justify-content: center; } }
+.rm-txleiste { display: inline-flex; flex-wrap: wrap; gap: 0.35rem; }
+.rm-zyklus[aria-pressed="true"] { background: #27af57; border-color: #27af57; color: #fff; }
+.rm-baender .btn-sm.rm-nur-rx { border-style: dashed; }
+/* AFU-15: non-amateur band the owner switched on for tx (never UKW-Rundfunk). */
+.rm-baender .btn-sm.rm-cb-frei { border-color: var(--warn, #c9862b); color: var(--warn, #c9862b); border-style: solid; }
+#rm-ribbon-name.rm-cb-frei { color: var(--warn, #c9862b); font-weight: 600; }
+.rm-app.rm-zuhoeren .rm-gruppen, .rm-app.rm-zuhoeren .rm-wf-panel #rm-schnell,
+.rm-app.rm-zuhoeren .rm-baender, .rm-app.rm-zuhoeren .rm-txleiste { opacity: 0.55; }
+
+/* ------------------------------------------------------------ band scale */
+.rm-ribbon { border: 1px solid var(--border); border-radius: 9px; background: var(--bg2); padding: 0.4rem 0.7rem 0.5rem; margin-bottom: 0.7rem; }
+.rm-ribbon-kopf { display: flex; flex-wrap: wrap; align-items: center; gap: 0.4rem 0.6rem; font-size: 0.78rem; color: var(--muted); margin-bottom: 0.2rem; }
+.rm-ribbon-kopf .btn-sm { padding: 0.1rem 0.55rem; min-width: 2rem; }
+.rm-skala-plan { display: flex; flex-wrap: wrap; gap: 0.2rem 0.7rem; }
+.rm-legende { display: inline-flex; align-items: center; gap: 0.3rem; }
+.rm-legende i { display: inline-block; width: 0.8rem; height: 0.45rem; border-radius: 2px; }
+.rm-bandskala { position: relative; height: 70px; cursor: crosshair; color: var(--fg); border-radius: 6px;
+  background: linear-gradient(180deg, transparent 0 16px, color-mix(in srgb, var(--accent) 8%, transparent) 16px 100%); }
+.rm-bandskala svg { display: block; width: 100%; height: 70px; }
+.rm-skala-text { font: 11px var(--rm-mono, monospace); fill: currentColor; }
+.rm-skala-durchlass { font: 600 10px var(--rm-mono, monospace); fill: #f5d90a; }
+.rm-marke { position: absolute; top: 17px; transform: translateX(-50%); font: inherit; font-size: 0.72rem; line-height: 1.1;
+  padding: 0.12rem 0.35rem; border-radius: 4px; border: 0; background: #b5b516; color: #0a0e1f; font-weight: 600;
+  white-space: nowrap; cursor: pointer; max-width: 9rem; overflow: hidden; text-overflow: ellipsis; box-shadow: 0 1px 3px rgba(0, 0, 0, 0.4); }
+.rm-marke::after { content: ""; position: absolute; left: 50%; top: 100%; transform: translateX(-50%);
+  border: 4px solid transparent; border-top-color: #b5b516; }
+.rm-marke:hover { background: #e0e030; }
+
+/* ------------------------------------------------ bookmarks and memories */
+.rm-listen { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0.7rem; margin-bottom: 1.5rem; align-items: start; }
+@media (max-width: 900px) { .rm-listen { grid-template-columns: minmax(0, 1fr); } }
+.rm-kopf-schalter { margin-left: auto; text-transform: none; letter-spacing: 0; font-weight: 500; font-size: 0.8rem; }
+.rm-klein-tabelle td, .rm-klein-tabelle th { padding: 0.3rem 0.45rem; }
+.rm-klein-tabelle .rm-knopfreihe { flex-wrap: nowrap; }
+.rm-gruppe { color: var(--muted); font-size: 0.85em; }
+.rm-dtmf-feld { display: grid; grid-template-columns: repeat(4, 1fr); gap: 0.35rem; margin-top: 0.6rem; }
+.rm-dtmf-feld .btn-sm { font-size: 1.1rem; padding: 0.5rem 0; }
+
+/* ------------------------------------------------------ collapsible boxes */
+.rm-kasten-leiste { display: flex; flex-wrap: wrap; align-items: center; gap: 0.4rem; margin: 0.2rem 0 0.6rem; }
+.rm-kasten-leiste .field-hint { margin: 0; }
+.rm-klapp { display: flex; align-items: center; gap: 0.45rem; flex: 1 1 auto; height: 100%; padding: 0; border: 0;
+  background: transparent; color: inherit; font: inherit; text-transform: inherit; letter-spacing: inherit;
+  font-weight: inherit; cursor: pointer; text-align: left; }
+.rm-klapp:hover { color: var(--fg); }
+.rm-klapp:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 4px; }
+.rm-klapp-pfeil { width: 0; height: 0; border-left: 0.3rem solid transparent; border-right: 0.3rem solid transparent;
+  border-top: 0.38rem solid currentColor; transition: transform 0.15s; }
+.rm-klapp[aria-expanded="false"] .rm-klapp-pfeil { transform: rotate(-90deg); }
+.rm-kasten.zu > .rm-kasten-inhalt { display: none; }
+.rm-kasten.zu > .rm-kasten-kopf { border-bottom: 0; }
+.rm-kasten.zu .rm-kopf-schalter { display: none; }
+
+/* -------------------------------------------------- lösbare Fenster (AFU-18) */
+/* Lesezeichen, Speicherkanäle, Chat und Logbuch lassen sich lösen: als
+   schwebendes Fenster frei verschieben und in der Größe ändern (Handgriff
+   unten rechts), einklappen (derselbe Klapp-Knopf wie angedockt) oder in
+   ein eigenes Browserfenster schicken (Chat, Logbuch). Position/Größe
+   kommen als Inline-Styles von remote.js, geklemmt auf den sichtbaren
+   Bereich unterhalb der (sticky) Kopfzeile der Seite. */
+.rm-kasten-knopf {
+  background: transparent; border: 0; color: var(--muted); cursor: pointer; font-size: 0.95rem;
+  padding: 0.15rem 0.35rem; line-height: 1; border-radius: 4px; flex: 0 0 auto;
+}
+.rm-kasten-knopf:hover { color: var(--fg); background: var(--card-hover); }
+.rm-fenster-knopf[aria-pressed="true"] { color: var(--accent); }
+@media (max-width: 700px) { .rm-kasten-knopf { display: none; } }
+
+.rm-kasten.rm-schwebt {
+  position: fixed; z-index: 45; max-width: 96vw; max-height: 92vh; box-shadow: var(--shadow);
+}
+.rm-kasten.rm-schwebt > .rm-kasten-kopf { cursor: move; touch-action: none; }
+/* Der Klapp-Knopf füllt den Kasten-Kopf sonst ganz (flex: 1 1 auto), dann
+   bliebe zum Ziehen nichts übrig - beim Schweben nur so breit wie sein Text. */
+.rm-kasten.rm-schwebt > .rm-kasten-kopf > .rm-klapp { flex: 0 0 auto; }
+.rm-kasten.rm-schwebt > .rm-kasten-inhalt { flex: 1 1 auto; overflow: auto; }
+.rm-kasten.rm-schwebt.zu { height: auto !important; }
+.rm-schwebt-griff {
+  display: none; position: absolute; right: 2px; bottom: 2px; width: 1.1rem; height: 1.1rem;
+  align-items: flex-end; justify-content: flex-end; color: var(--muted); cursor: nwse-resize;
+  touch-action: none;
+}
+.rm-schwebt-griff::before { content: "⤡"; font-size: 0.9rem; line-height: 1; }
+.rm-kasten.rm-schwebt .rm-schwebt-griff { display: flex; }
+@media (max-width: 700px) { .rm-schwebt-griff { display: none !important; } }
+
+.rm-fenster-platzhalter { display: grid; gap: 0.5rem; justify-items: start; }
+.rm-fenster-platzhalter .field-hint { margin: 0; }
+
+/* --------------------------------------------- Boxen verschieben (AFU-21) */
+/* Jede angedockte Box lässt sich am Kopf in eine andere Reihenfolge ziehen
+   (Handgriff, Zielbox bekommt einen gestrichelten Rahmen) und über den
+   Breiten-Knopf 1/2/3 Gitterspalten breit machen. Beides nur ab 701 px,
+   wie das Lösen in ein schwebendes Fenster - auf dem Telefon gibt es ohnehin
+   nur eine Spalte. */
+@media (min-width: 701px) {
+  .rm-kasten:not(.rm-schwebt) > .rm-kasten-kopf { cursor: grab; touch-action: none; }
+}
+.rm-zieh-griff { font-size: 0.85rem; cursor: inherit; }
+.rm-kasten.rm-zieht { opacity: 0.5; }
+.rm-kasten.rm-zielbox { outline: 2px dashed var(--accent); outline-offset: -2px; }
+
+/* eigenes Browserfenster (remote-fenster.html): kein Kopf/Fuß der Seite,
+   nur der eine Kasten */
+.rm-fenster-body { margin: 0; padding: 0.7rem 0.8rem 1rem; }
+.rm-fenster-kopf {
+  font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted);
+  font-weight: 600; margin-bottom: 0.5rem;
+}
+.rm-fenster-inhalt { display: grid; gap: 0.55rem; }
+.rm-fenster-inhalt .field { margin: 0; }
+
+/* ------------------------------------------------------------ power key */
+.rm-kopf .btn-sm.rm-power { color: #ef8a8a; border-color: #5a2a36; }
+.rm-kopf .btn-sm.rm-power.an { color: #27af57; border-color: #1f6a3d; }
+
+/* ------------------------------------------------------------ frequency lock */
+.rm-fsperre { font-size: 1.1rem; line-height: 1; padding: 0.3rem 0.4rem; border-radius: 6px; cursor: pointer;
+  background: transparent; border: 1px solid #2a3358; color: #eef0fa; }
+.rm-fsperre[aria-pressed="true"] { background: #d6a10b; border-color: #d6a10b; }
+.rm-app.rm-freq-gesperrt .rm-freq { cursor: not-allowed; }
+.rm-app.rm-freq-gesperrt #rm-freq-a .ziffer:hover { background: transparent; }
+
+/* ------------------------------------------------------------ update hint */
+.rm-update { display: flex; flex-wrap: wrap; align-items: center; gap: 0.4rem; justify-content: flex-end;
+  font-size: 0.8rem; color: #d6a10b; }
+@media (max-width: 900px) { .rm-update { justify-content: center; } }
+/* Gewichteter Hinweis (AFU-14): kosmetisch/funktion bleiben in der normalen Farbe des
+   Kastens, sicherheit/bruch stechen zusaetzlich heraus. */
+.rm-update-gewicht { font-weight: 600; }
+.rm-update-gewicht.sicherheit { color: #d6a10b; }
+.rm-update-gewicht.bruch { color: #ef4444; }
+
+/* ------------------------------------------------------------ changelog */
+/* "Neu" key in the header: looks like the other header keys (the rules for
+   .bar-actions > button come from style.css), plus a count badge. */
+.rm-cl-knopf { position: relative; }
+.rm-cl-zahl:empty { display: none; }
+.rm-cl-zahl { position: absolute; top: -0.3rem; right: -0.3rem; min-width: 1.1rem; height: 1.1rem; padding: 0 0.25rem;
+  border-radius: 999px; background: #d6a10b; color: #0a0e1f; font-size: 0.7rem; font-weight: 700; line-height: 1.1rem; text-align: center; }
+.rm-cl-knopf.ungelesen { border-color: #d6a10b; }
+.rm-cl-liste { max-height: 60vh; overflow-y: auto; }
+.rm-neu-eintrag { padding: 0.2rem 0 0.4rem; border-bottom: 1px solid var(--border); }
+.rm-neu-eintrag h3 { margin: 0.6rem 0 0.3rem; font-size: 1rem; }
+.rm-neu-eintrag ul { margin: 0; padding-left: 1.2rem; }
+.rm-neu-eintrag li { margin-bottom: 0.25rem; }
+.rm-neu-eintrag:not(.ungelesen) { color: var(--muted); }
+.rm-neu-datum { color: var(--muted); font-weight: 400; }
+.rm-neu-marke { margin-left: 0.5rem; font-size: 0.72rem; padding: 0.05rem 0.4rem; border-radius: 999px; background: #d6a10b; color: #0a0e1f; vertical-align: middle; }
+
+/* ------------------------------------------------------------ update banner */
+.rm-update-banner { position: sticky; top: 0; z-index: 50; margin: 0 auto 0.6rem; max-width: var(--maxw);
+  padding: 0.7rem 1rem; border-radius: 0 0 9px 9px; font-weight: 600; text-align: center;
+  background: #d6a10b; color: #0a0e1f; box-shadow: var(--shadow); }
+.rm-update-banner.fehler { background: #ef4444; color: #fff; }
+
+/* ------------------------------------------------ operator status in the header */
+.rm-kopf-bedienung { display: flex; flex-direction: column; align-items: flex-end; gap: 0.1rem; margin-right: 0.3rem; }
+.rm-kopf-bedienung .rm-bedienung { flex-wrap: nowrap; font-size: 0.82rem; color: var(--fg); }
+.rm-kopf-bedienung .rm-bedienung .btn-sm { height: 2rem; padding: 0 0.7rem; font-size: 0.8rem; white-space: nowrap; }
+.rm-kopf-bedienung .rm-bediener { font-size: 0.7rem; color: var(--muted); text-align: right; min-height: 0; }
+.rm-kopf-bedienung .rm-bediener:empty { display: none; }
+@media (max-width: 52rem) {
+  .rm-kopf-bedienung #rm-bedienung-text, .rm-kopf-bedienung .rm-bediener { display: none; }
+}
+/* mittig über der Stationsauswahl, eigene Spalte statt der schmalen
+   gemeinsamen Kopfzeile: volle Breite, zentriert, immer sichtbar. */
+.rm-kopf-station .rm-kopf-bedienung { align-items: center; margin: 0 0 0.3rem; }
+.rm-kopf-station .rm-kopf-bedienung .rm-bedienung { flex-wrap: wrap; justify-content: center; }
+.rm-kopf-station .rm-kopf-bedienung .rm-bediener { text-align: center; }
+@media (max-width: 52rem) {
+  .rm-kopf-station .rm-kopf-bedienung #rm-bedienung-text, .rm-kopf-station .rm-kopf-bedienung .rm-bediener { display: revert; }
+}
+
+/* controls that do not work in the current mode */
+.rm-wirkt-nicht label, .rm-wirkt-nicht input[type="range"] { opacity: 0.45; }
+.rm-modus-hinweis { margin-top: 0.15rem; color: #d6a10b; }
+/* RIT row under VFO A */
+.rm-rit-zeile { display: flex; align-items: center; gap: 0.35rem; padding-left: 1.6rem; }
+.rm-kopf .rm-rit-zeile .btn-sm { padding: 0.15rem 0.6rem; }
+.rm-kopf .btn-sm.rm-rit-an[aria-pressed="true"] { background: #f5d90a; border-color: #f5d90a; color: #0a0e1f; font-weight: 700; }
+.rm-rit-wert { min-width: 5.5rem; text-align: center; font-weight: 700; color: #f5d90a; cursor: ns-resize; }
+.rm-rit-zeile.aus .rm-rit-wert { color: #6b7599; }
+@media (max-width: 900px) { .rm-rit-zeile { padding-left: 0; justify-content: center; } }
+
+/* hover readout on the band scale */
+.rm-skala-hover { position: absolute; top: 14px; bottom: 14px; width: 0; border-left: 1px dashed #eef0fa; pointer-events: none; opacity: 0.8; }
+.rm-skala-hover-text { position: absolute; top: -12px; left: 0; transform: translateX(-50%); white-space: nowrap;
+  font-size: 0.72rem; padding: 0.05rem 0.35rem; border-radius: 4px; background: #eef0fa; color: #0a0e1f; }
+.rm-skala-hover-text.links { transform: none; }
+.rm-skala-hover-text.rechts { transform: translateX(-100%); }
+
+/* confirm key of the safety question */
+.btn.rm-gefahr { background: #ef4444; border-color: #ef4444; color: #fff; }
+
+/* ------------------------------------------ compact band keys, header TX row */
+.rm-ribbon .rm-baender { display: flex; flex-wrap: wrap; gap: 0.25rem; margin-bottom: 0.4rem; }
+.rm-ribbon .rm-baender .btn-sm { min-width: 0; padding: 0.12rem 0.55rem; font-size: 0.78rem; line-height: 1.3; }
+.rm-sendeleiste { gap: 0.35rem; }
+.rm-sendeleiste .rm-txleiste { display: inline-flex; gap: 0.35rem; }
+.rm-kopf .rm-sendeleiste .btn-sm { padding: 0.25rem 0.7rem; }
+.rm-kopf .rm-sendeleiste .rm-an { background: #151b35; color: #eef0fa; border-color: #2a3358; }
+.rm-kopf .rm-sendeleiste .rm-zyklus[aria-pressed="true"] { background: #27af57; border-color: #27af57; color: #fff; }
+.rm-kopf .rm-ptt { min-width: 6.5rem; padding: 0.4rem 1rem; }
+.rm-kopf .rm-tx-uhr { color: #ef4444; }
+.rm-kasten-leiste { justify-content: flex-end; }
+
+/* header on phones: no station hint, the key keeps one word (see bedienungKurz) */
+@media (max-width: 52rem) { .rm-lokal-hinweis { display: none; } }
+/* transmit row in the header: disabled keys and the stop key */
+.rm-sendeleiste .btn-sm[disabled], .rm-sendeleiste .btn[disabled] { opacity: 0.45; cursor: not-allowed; }
+.rm-kopf .rm-sendeleiste .halt { background: #ef4444; color: #fff; border-color: transparent; font-weight: 700; }
+
+/* footer strip: station version and update check */
+.rm-fussleiste { display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 0.6rem;
+  margin: 1.5rem auto 0; padding: 0.6rem 1rem; color: var(--muted); font-size: 0.85rem; }
+
+/* spinner while the station reads from the rig */
+.rm-spinner { display: inline-block; width: 1em; height: 1em; margin-right: 0.5em; vertical-align: -0.15em;
+  border: 2px solid currentColor; border-right-color: transparent; border-radius: 50%;
+  animation: rm-dreh 0.8s linear infinite; }
+@keyframes rm-dreh { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .rm-spinner { animation-duration: 2.4s; } }
+
+/* band scale box, compact: small keys (not the 2.5 rem field height) */
+.rm-ribbon { padding: 0.35rem 0.6rem 0.3rem; }
+.rm-ribbon .rm-baender { gap: 0.2rem; margin-bottom: 0.25rem; }
+.rm-ribbon .rm-baender .btn-sm, .rm-ribbon-kopf .btn-sm { min-height: 1.6rem; padding: 0 0.5rem; font-size: 0.76rem; }
+.rm-ribbon-kopf .btn-sm { min-width: 1.6rem; padding: 0 0.35rem; }
+.rm-ribbon-kopf select { min-height: 1.6rem; height: 1.6rem; padding: 0 1.6rem 0 0.5rem; font-size: 0.76rem; }
+.rm-ribbon-kopf { margin-bottom: 0; }
+@media (max-width: 40rem) {
+  .rm-ribbon .rm-skala-plan { display: none; }
+  .rm-ribbon-kopf .rm-tasten-luft { flex-basis: 100%; height: 0; }
+}
+
+/* "Neu" key: same look as the header keys (Melden) */
+.rm-cl-knopf { display: inline-flex; align-items: center; gap: 0.4rem; padding: 0.42rem 0.7rem; font: inherit;
+  font-size: 0.9rem; cursor: pointer; border: 1px solid var(--border); border-radius: 999px;
+  background: var(--card-bg); color: inherit; }
+.rm-cl-knopf:hover { border-color: var(--accent); background: var(--card-hover); }
+/* afu.tools: "Neu" in a slim row above the frequency box. Wer bedient und die
+   Bedienerliste sitzen stattdessen mittig über der Stationsauswahl, siehe
+   .rm-kopf-station .rm-kopf-bedienung weiter oben. */
+.rm-statuszeile { display: flex; align-items: center; justify-content: flex-end; gap: 0.6rem; margin: 0 0 0.5rem; }
+.rm-statuszeile .rm-cl-knopf { min-height: 2rem; padding: 0 0.7rem; font-size: 0.8rem; }
+.rm-statuszeile:has(.rm-cl-knopf[hidden]) { display: none; }
+
+/* direct way over HAMNET not working: hint with link and retry key */
+.rm-direkt-banner { position: static; background: var(--bg2); color: var(--fg); border: 1px solid #d6a10b;
+  border-radius: 9px; font-weight: 400; display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 0.3rem; }
+.rm-direkt-banner a { color: var(--accent); font-weight: 600; }

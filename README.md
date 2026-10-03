@@ -60,6 +60,14 @@ the original `radiowatch.service` (`r2t2srv`/`r2t2client`), which must not run a
 
 The web interface is served on port 8073.
 
+Create the first administrator on the device (asks for the password, the running service
+picks the account up without a restart):
+
+```sh
+sudo /opt/r2t2sdr/r2t2sdr --user DL0XYZ --role admin
+sudo /opt/r2t2sdr/r2t2sdr --users      # list accounts
+```
+
 ## Configuration
 
 `/etc/r2t2sdr.conf`, see [dist/r2t2sdr.conf](dist/r2t2sdr.conf):
@@ -75,17 +83,76 @@ band = 40m, 7100000, 1, lsb     # name, centre Hz, antenna input, default mode
 Each band shows 192 kHz around its centre (about 186 kHz usable, the FPGA decimation filter
 rolls off at the edges).
 
+Settings changed in the web interface live in `/var/lib/r2t2sdr` (`state_dir`) and override
+the config file:
+
+| File | Content |
+|---|---|
+| `users` | accounts: name, role, PBKDF2 iterations, salt, hash (mode 0600) |
+| `sessions` | login sessions: SHA-256 of the token, name, expiry (mode 0600) |
+| `bookmarks` | id, frequency, mode, name |
+| `antennas` | name and frequency ranges per antenna input, default input |
+| `station.conf` | title, callsign, location, locator, access, chat, gain, attenuator |
+
 ## Web interface
 
-Opened directly, the page is a full receiver in the afu.tools look (tokens, buttons and fields
-of afu.tools `style.css`, tool-page layout): header with frequency, station and UTC clock,
-waterfall with a control panel, light theme from the system setting.
+Opened directly, the page looks like the remote station of afu.tools: `afu-style.css` and
+`remote.css` are unchanged copies of the afu.tools style sheets, the markup uses the same
+classes (`rm-…`). Own additions are in `sdr.css`. Parts of the remote station that make no sense
+for a receiver (transmitting, VFO B, RIT, memories, log book, TX meters) are left out.
+
+- header with frequency (mouse wheel over a digit tunes that digit), mode, step, station and
+  UTC clock, connection state, audio and administration
+- band buttons and band scale with passband, the part the waterfall shows and bookmark flags
+- level meter (dBFS in the filter), antenna in use, free receivers
+- waterfall and spectrum with a quick panel (volume, mute, squelch, filter, waterfall levels)
+- boxes for bookmarks and chat
+- top bar as in the afu-remote direct access, light/dark key, "Melden" (report a problem to
+  afu.tools) when the browser reaches afu.tools
 
 Inside an iframe (or with `?embed`, `?embed=0` forces the full page) it shows only the
 frequency scale, spectrum and waterfall, without controls and without audio.
 
-All URLs are relative (`style.css`, `app.js`, `ws`, `api/...`), so the page also works below a
-path prefix, e.g. behind the WebSDR tunnel of afu-remote.
+All URLs are relative (`afu-style.css`, `app.js`, `ws`, `api/...`), so the page also works below
+a path prefix, e.g. behind the WebSDR tunnel of afu-remote. Style sheets, scripts and images are
+cached for a week; the `?v=` stamps in `index.html` change with every release.
+
+## Accounts
+
+Listening and the waterfall need no account. Roles, each including the ones below:
+
+| Role | May |
+|---|---|
+| `admin` | everything: accounts, station, antennas, bookmarks |
+| `lesezeichen` | maintain bookmarks |
+| `nutzer` | listen and chat when the station restricts this to logged-in users |
+
+Login works without the password on the wire, also over plain http:
+
+1. the browser asks for a challenge and gets salt, iterations and a one-time nonce
+   (unknown names get a stable fake salt, so the answer does not reveal accounts),
+2. it computes `PBKDF2-HMAC-SHA256(password, salt, 10000)` itself (`kdf.js`, browsers offer
+   no WebCrypto over http) and sends `HMAC-SHA256(result, nonce)`,
+3. the server compares with the stored hash; the nonce is valid once and for 60 s.
+
+New passwords are hashed in the browser as well, only salt and hash are sent. Five failed
+logins lock the address for 60 s. Sessions last 90 days and survive a restart.
+
+Without TLS a listener on the network can still see the session token and try to guess weak
+passwords offline from a recorded login. Use passwords that are not used elsewhere.
+
+## Antennas
+
+Under Verwaltung > Antennen each input (ANT1, ANT2) gets a name, the frequency ranges it serves
+(kHz, e.g. `3500-3800, 7000-7200`), gain and attenuator. A frequency goes to the first input
+whose ranges cover it, otherwise to the default input. Waterfall views and listeners switch
+input automatically; the page shows the antenna in use.
+
+## Chat
+
+Messages go to everybody connected. The last 30 stay in memory for newcomers, nothing is
+written to disk. Guests choose a name and are marked as guests. The station decides who may
+write: everybody, logged-in users only, or nobody. Ten messages per minute per connection.
 
 ## Embedding and remote control
 
@@ -133,16 +200,30 @@ Client to server (JSON text frames):
 | `tune` | `freq` (Hz), `mode` (`usb`, `lsb`, `cw`, `am`, `fm`/`nfm`), `lo`, `hi` (passband in Hz relative to `freq`) |
 | `start` / `stop` | audio on/off (allocates a receiver) |
 | `squelch` | `level` in dBFS, `-999` = off |
+| `chat` | `text`, `name` (guests only) |
+| `challenge` | `user`, `purpose` (`login` or `passwd`) |
+| `login` | `user`, `proof` |
+| `auth` / `logout` | `token` |
+| `passwd` | `proof` (old password), `salt`, `hash`, `iter` |
+| `bm_set` / `bm_del` | `id` (0 = new), `name`, `freq`, `mode` / `id` |
+| `users`, `user_set`, `user_del` | `name`, `role`, optional `salt`, `hash`, `iter` |
+| `station_set` | `title`, `callsign`, `location`, `locator`, `access` (`open`, `login`), `chat` (`all`, `login`, `off`) |
+| `antennas`, `ant_set` | `input`, `name`, `ranges`, `gain`, `att`, `default` |
 | `ping` | keep-alive, sent every 10 s; clients silent for 30 s are dropped |
 
 Server to client, JSON text frames:
 
 | `type` | Fields |
 |---|---|
-| `config` | as `api/config` |
-| `view` | `id`, `band` (configured band or -1), `center`, `span` |
+| `config` | as `api/config`, plus `access`, `chat`, antenna names |
+| `view` | `id`, `band` (configured band or -1), `center`, `span`, `input`, `antenna` |
 | `status` | `users`, `listeners`, `free`, `total` |
-| `audio` | `on` |
+| `audio` | `on`, `input`, `antenna` |
+| `bookmarks` | `list` of `id`, `freq`, `mode`, `name` |
+| `chat` | `who`, `guest`, `ts`, `text` |
+| `challenge` | `purpose`, `user`, `salt`, `iter`, `nonce` |
+| `login` / `logout` | `user`, `role`, `token` (only right after login) |
+| `users`, `antennas`, `ok` | administration answers |
 | `error` | `msg` (German, shown to the user) |
 
 Binary frames:
@@ -164,6 +245,9 @@ Tested on one R2T2 (October 2026):
 - service start after reboot, dead connections dropped after 30 s
 - full page at 1440 px (dark and light) and 390 px, embedded page in an iframe including
   `window.UI`, `#freq=` and `postMessage` in both directions
+- login by challenge-response (JavaScript KDF checked against Node crypto), wrong password,
+  accounts created and deleted with browser-side hashes, bookmarks, antenna ranges switching
+  the input, access restricted to logged-in users, chat with a logged-in user and a guest
 
 Not tested yet:
 
@@ -171,3 +255,4 @@ Not tested yet:
   intelligible)
 - reception on 6 m (front end passes up to 61 MHz, no signal seen)
 - operation behind the afu-remote WebSDR tunnel
+- sending a report through "Melden" (button appears, the request itself was not sent)

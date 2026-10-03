@@ -12,4 +12,23 @@
 #define MAX_BANDS    32
 #define MAX_CLIENTS  32
 
+#include <string.h>
+
+/*
+ * Drop a UTF-8 sequence cut off at the end of s. Browsers close a WebSocket
+ * on invalid UTF-8 in a text frame, so every shortened string goes through here.
+ */
+static inline void utf8_trim(char *s)
+{
+    size_t n = strlen(s), i = n;
+    while (i > 0 && ((unsigned char)s[i - 1] & 0xc0) == 0x80)
+        i--;                                   /* continuation bytes */
+    if (i == 0)
+        return;
+    unsigned char lead = (unsigned char)s[i - 1];
+    size_t need = lead >= 0xf0 ? 4 : lead >= 0xe0 ? 3 : lead >= 0xc0 ? 2 : 1;
+    if (n - (i - 1) < need)
+        s[i - 1] = 0;
+}
+
 #endif

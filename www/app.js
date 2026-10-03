@@ -1,8 +1,10 @@
 'use strict';
 
 /*
- * R2T2 WebSDR page. Two faces:
- *  - opened directly: full receiver with header, waterfall and control panel
+ * R2T2 WebSDR page, laid out like the afu.tools remote station (same classes,
+ * style sheets copied from afu.tools). Two faces:
+ *  - opened directly: header, band buttons and scale, meter, waterfall with
+ *    panel, bookmarks and chat, administration for logged-in users
  *  - embedded (inside an iframe, or ?embed): scale, spectrum and waterfall only,
  *    no audio. Compatible with how afu.tools/remote drives an external OpenWebRX:
  *    it loads <base>/#freq=<Hz>,mod=<usb|lsb|cw|am|nfm> and calls
@@ -28,28 +30,27 @@
   const DEFAULT_STEP = { lsb: 100, usb: 100, cw: 10, am: 5000, fm: 5000 };
   const VIEW_GRID = 25000;     // free views snap their centre to this grid so viewers share them
   const VIEW_INNER = 0.85;     // re-centre once the frequency leaves this part of the span
+  const PBKDF2_ITER = 10000;
+
+  // Band edges for the band scale (IARU region 1, plus the broadcast bands).
+  const BAND_EDGES = [
+    ['160 m', 1810000, 2000000], ['80 m', 3500000, 3800000], ['60 m', 5351500, 5366500],
+    ['49 m Rundfunk', 5900000, 6200000], ['40 m', 7000000, 7200000], ['41 m Rundfunk', 7200000, 7450000],
+    ['31 m Rundfunk', 9400000, 9900000], ['30 m', 10100000, 10150000], ['25 m Rundfunk', 11600000, 12100000],
+    ['20 m', 14000000, 14350000], ['17 m', 18068000, 18168000], ['15 m', 21000000, 21450000],
+    ['12 m', 24890000, 24990000], ['11 m CB', 26565000, 27405000], ['10 m', 28000000, 29700000],
+    ['6 m', 50000000, 52000000],
+  ];
 
   const st = {
-    cfg: null,
-    ws: null,
-    view: -1,
-    viewBand: -1,
-    center: 0,
-    span: 192000,
-    pending: null,
-    userBand: null,
-    freq: 0,
-    mode: 'usb',
-    bw: 0,
-    step: 100,
-    listening: false,
-    wantAudio: false,
-    wfMin: 40,
-    wfMax: 120,
-    autoFrames: 8,
-    smooth: null,
-    lastBins: null,
-    editing: false,
+    cfg: null, ws: null, gotConfig: false,
+    view: -1, viewBand: -1, center: 0, span: 192000, pending: null, userBand: null,
+    freq: 0, mode: 'usb', bw: 0, step: 100,
+    listening: false, wantAudio: false, muted: false,
+    wfMin: 40, wfMax: 120, autoFrames: 8, smooth: null, lastBins: null,
+    editing: false, bookmarks: [], bmBoxes: [],
+    user: null, role: null, viewAnt: '', audioAnt: '', status: null,
+    chat: [], online: false,
   };
 
   const PREFIX = EMBED ? 'r2t2e.' : 'r2t2.';
@@ -57,19 +58,20 @@
     get(k, d) { try { const v = localStorage.getItem(PREFIX + k); return v === null ? d : JSON.parse(v); } catch (e) { return d; } },
     set(k, v) { try { localStorage.setItem(PREFIX + k, JSON.stringify(v)); } catch (e) { /* storage unavailable */ } },
   };
+  const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
-  // ------------------------------------------------------------ toasts
+  // ------------------------------------------------------------ toasts (as on /remote)
 
   function toast(msg, kind = 'info') {
     if (EMBED) { console.warn('r2t2sdr:', msg); return; }
     const t = document.createElement('div');
-    t.className = `sdr-toast ${kind}`;
+    t.className = `rm-toast ${kind}`;
     t.textContent = msg;
     $('toasts').appendChild(t);
-    setTimeout(() => t.remove(), 5000);
+    setTimeout(() => t.remove(), 6000);
   }
 
-  // ------------------------------------------------------------ colour map
+  // ------------------------------------------------------------ colour map (same as /remote)
 
   const palette = (() => {
     const stops = [
@@ -88,15 +90,10 @@
     return p;
   })();
 
-  function cssVar(name) {
-    return getComputedStyle(document.documentElement).getPropertyValue(name).trim() || '#8a93b3';
-  }
-
   // ------------------------------------------------------------ canvases
 
-  const spec = $('spectrum'), scale = $('scale'), wf = $('waterfall');
-  const specCtx = spec.getContext('2d'), scaleCtx = scale.getContext('2d'), wfCtx = wf.getContext('2d');
-  // history in data resolution, scaled onto the visible canvas
+  const spec = $('spectrum'), wf = $('waterfall');
+  const specCtx = spec.getContext('2d'), wfCtx = wf.getContext('2d');
   const hist = document.createElement('canvas');
   hist.width = 1024;
   hist.height = 400;
@@ -118,12 +115,13 @@
   }
 
   function resize() {
-    [spec, scale, wf].forEach(fitCanvas);
+    [spec, wf].forEach(fitCanvas);
     wfCtx.imageSmoothingEnabled = false;
     drawWaterfall();
-    drawScale();
+    drawWfScale();
     drawSpectrum();
     updatePassband();
+    if (!EMBED) drawRibbon();
   }
 
   function freqToX(f, w) { return ((f - (st.center - st.span / 2)) / st.span) * w; }
@@ -155,75 +153,101 @@
     return [st.freq + bw[0], st.freq + bw[1]];
   }
 
+  // spectrum as on /remote: dark ground, faint grid, one line
   function drawSpectrum() {
-    const w = spec.width, h = spec.height;
+    const w = spec.width, h = spec.height, r = dpr();
     specCtx.fillStyle = '#05070f';
     specCtx.fillRect(0, 0, w, h);
     const lo = st.wfMin - 10, hi = st.wfMax + 20, range = hi - lo;
-
-    specCtx.strokeStyle = 'rgba(238,240,250,0.07)';
+    specCtx.strokeStyle = 'rgba(120,140,200,0.25)';
     specCtx.lineWidth = 1;
-    specCtx.fillStyle = 'rgba(138,147,179,0.8)';
-    specCtx.font = `${Math.round(10 * dpr())}px system-ui, sans-serif`;
+    specCtx.fillStyle = 'rgba(138,147,179,0.85)';
+    specCtx.font = `${Math.round(10 * r)}px system-ui, sans-serif`;
+    specCtx.textBaseline = 'alphabetic';
     for (let db = Math.ceil(lo / 10) * 10; db <= hi; db += 10) {
-      const y = h - ((db - lo) / range) * h;
-      specCtx.beginPath();
-      specCtx.moveTo(0, y + 0.5);
-      specCtx.lineTo(w, y + 0.5);
-      specCtx.stroke();
-      if (!EMBED || h > 80) specCtx.fillText(`${db - 170}`, 4, y - 2);
+      const y = Math.round(h - ((db - lo) / range) * h) + 0.5;
+      specCtx.beginPath(); specCtx.moveTo(0, y); specCtx.lineTo(w, y); specCtx.stroke();
+      if (h > 60 * r) specCtx.fillText(`${db - 170}`, 4, y - 2);
     }
-
     const pb = passbandRange();
     if (pb) {
       const x0 = freqToX(pb[0], w), x1 = freqToX(pb[1], w);
-      specCtx.fillStyle = 'rgba(106,166,255,0.16)';
+      specCtx.fillStyle = 'rgba(245,217,10,0.12)';
       specCtx.fillRect(x0, 0, Math.max(1, x1 - x0), h);
-      specCtx.fillStyle = 'rgba(106,166,255,0.95)';
-      specCtx.fillRect(Math.round(freqToX(st.freq, w)), 0, Math.max(1, Math.round(dpr())), h);
+      specCtx.fillStyle = '#ef4444';
+      specCtx.fillRect(Math.round(freqToX(st.freq, w)), 0, Math.max(1, Math.round(r)), h);
     }
-
+    drawSpectrumBookmarks(w, h);
     const s = st.smooth;
     if (!s) return;
     specCtx.beginPath();
     for (let i = 0; i < s.length; i++) {
       const x = (i / (s.length - 1)) * w;
-      const y = h - ((s[i] - lo) / range) * h;
+      const y = h - Math.max(0, Math.min(1, (s[i] - lo) / range)) * h;
       if (i === 0) specCtx.moveTo(x, y); else specCtx.lineTo(x, y);
     }
-    specCtx.strokeStyle = '#8fc2ff';
-    specCtx.lineWidth = 1.2 * dpr();
+    specCtx.strokeStyle = '#7c9cff';
+    specCtx.lineWidth = 1.5 * r;
     specCtx.stroke();
-    specCtx.lineTo(w, h);
-    specCtx.lineTo(0, h);
-    specCtx.closePath();
-    specCtx.fillStyle = 'rgba(106,166,255,0.13)';
-    specCtx.fill();
   }
 
-  function drawScale() {
-    const w = scale.width, h = scale.height, r = dpr();
-    scaleCtx.clearRect(0, 0, w, h);
-    if (!st.center) return;
+  // bookmarks in the spectrum: small yellow flags like on the band scale
+  function drawSpectrumBookmarks(w, h) {
+    st.bmBoxes = [];
+    if (!st.center || !st.bookmarks.length) return;
+    const r = dpr();
+    specCtx.font = `600 ${Math.round(10 * r)}px system-ui, sans-serif`;
+    specCtx.textBaseline = 'middle';
+    let row = 0, lastEnd = -Infinity;
+    for (const b of st.bookmarks) {
+      const x = freqToX(b.freq, w);
+      if (x < 0 || x > w) continue;
+      specCtx.strokeStyle = 'rgba(181,181,22,0.55)';
+      specCtx.setLineDash([3 * r, 3 * r]);
+      specCtx.beginPath();
+      specCtx.moveTo(Math.round(x) + 0.5, 0);
+      specCtx.lineTo(Math.round(x) + 0.5, h);
+      specCtx.stroke();
+      specCtx.setLineDash([]);
+      const tw = specCtx.measureText(b.name).width + 8 * r, th = 14 * r;
+      const x0 = Math.min(Math.max(0, x - tw / 2), w - tw);
+      row = x0 < lastEnd ? (row + 1) % 3 : 0;
+      if (row === 0) lastEnd = -Infinity;
+      const y0 = 2 * r + row * (th + 2 * r);
+      specCtx.fillStyle = '#b5b516';
+      specCtx.beginPath();
+      if (specCtx.roundRect) specCtx.roundRect(x0, y0, tw, th, 4 * r); else specCtx.rect(x0, y0, tw, th);
+      specCtx.fill();
+      specCtx.fillStyle = '#0a0e1f';
+      specCtx.fillText(b.name, x0 + 4 * r, y0 + th / 2);
+      lastEnd = Math.max(lastEnd, x0 + tw);
+      st.bmBoxes.push({ x0, x1: x0 + tw, y0, y1: y0 + th, b });
+    }
+  }
+
+  function bookmarkAt(ev) {
+    const rect = spec.getBoundingClientRect();
+    const sx = spec.width / rect.width, sy = spec.height / rect.height;
+    const x = (ev.clientX - rect.left) * sx, y = (ev.clientY - rect.top) * sy;
+    const hit = st.bmBoxes.find((k) => x >= k.x0 && x <= k.x1 && y >= k.y0 && y <= k.y1);
+    return hit ? hit.b : null;
+  }
+
+  // frequency labels above the spectrum: HTML spans as on /remote
+  function drawWfScale() {
+    const box = $('wfskala');
+    if (!st.center) { box.innerHTML = ''; return; }
+    const w = box.clientWidth || 800;
     const start = st.center - st.span / 2, end = st.center + st.span / 2;
     const pxPerKHz = (w / st.span) * 1000;
-    const major = [1, 2, 5, 10, 20, 25, 50].find((k) => k * pxPerKHz > 70 * r) || 100;
-    const minor = major / 5;
-    const muted = EMBED ? '#8a93b3' : cssVar('--muted');
-    scaleCtx.strokeStyle = muted;
-    scaleCtx.fillStyle = EMBED ? '#eef0fa' : cssVar('--fg');
-    scaleCtx.font = `${Math.round(11 * r)}px system-ui, sans-serif`;
-    scaleCtx.textAlign = 'center';
-    scaleCtx.textBaseline = 'bottom';
-    scaleCtx.beginPath();
-    for (let f = Math.ceil(start / (minor * 1000)) * minor * 1000; f <= end; f += minor * 1000) {
-      const x = Math.round(freqToX(f, w)) + 0.5;
-      const isMajor = Math.abs(f / 1000 / major - Math.round(f / 1000 / major)) < 1e-6;
-      scaleCtx.moveTo(x, h);
-      scaleCtx.lineTo(x, h - (isMajor ? 6 : 3) * r);
-      if (isMajor) scaleCtx.fillText((f / 1000).toFixed(0), x, h - 6 * r);
+    const major = [1, 2, 5, 10, 20, 25, 50].find((k) => k * pxPerKHz > 70) || 100;
+    const parts = [];
+    for (let f = Math.ceil(start / (major * 1000)) * major * 1000; f <= end; f += major * 1000) {
+      const pct = ((f - start) / st.span) * 100;
+      if (pct < 2 || pct > 98) continue;
+      parts.push(`<span style="left:${pct}%">${(f / 1000).toFixed(0)}</span>`);
     }
-    scaleCtx.stroke();
+    box.innerHTML = parts.join('');
   }
 
   function updatePassband() {
@@ -246,6 +270,12 @@
     st.wfMax = Math.min(255, Math.max(st.wfMin + 20, p(0.995) + 6));
     $('wfmin').value = st.wfMin;
     $('wfmax').value = st.wfMax;
+    showLevels();
+  }
+
+  function showLevels() {
+    $('wfmin-wert').textContent = `${st.wfMin - 170} dB`;
+    $('wfmax-wert').textContent = `${st.wfMax - 170} dB`;
   }
 
   function onWaterfall(bins) {
@@ -255,6 +285,114 @@
     st.lastBins = bins;
     pushWaterfall(bins);
     drawSpectrum();
+  }
+
+  // ------------------------------------------------------------ band buttons and band scale
+
+  function bandEdges(f) {
+    const e = BAND_EDGES.find(([, lo, hi]) => f >= lo && f <= hi);
+    return e ? { name: e[0], lo: e[1], hi: e[2] } : null;
+  }
+
+  function renderBandButtons() {
+    const box = $('baender');
+    box.innerHTML = '';
+    for (const b of st.cfg.bands) {
+      const k = document.createElement('button');
+      k.type = 'button';
+      k.className = 'btn-sm';
+      k.textContent = b.name.replace(/(\d)m\b/, '$1 m');
+      k.title = `${b.name}, Wasserfall um ${(b.center / 1e6).toFixed(3)} MHz`;
+      k.dataset.band = b.id;
+      k.addEventListener('click', () => { st.userBand = b.id; requestBand(b.id); });
+      box.appendChild(k);
+    }
+    markBand();
+  }
+
+  function markBand() {
+    document.querySelectorAll('#baender .btn-sm').forEach((k) =>
+      k.setAttribute('aria-current', String(Number(k.dataset.band) === st.viewBand)));
+  }
+
+  function niceStep(x) {
+    const p = 10 ** Math.floor(Math.log10(x));
+    for (const m of [1, 2, 2.5, 5, 10]) if (m * p >= x) return m * p;
+    return 10 * p;
+  }
+  function mhzLabel(hz, step) {
+    const dec = step >= 1e6 ? 0 : step >= 1e5 ? 1 : step >= 1e4 ? 2 : 3;
+    return (hz / 1e6).toFixed(dec).replace('.', ',');
+  }
+
+  // SVG like ribbonZeichnen() on /remote: ruler, passband at the dial, red dial
+  // line, the part the waterfall shows, bookmark flags as buttons
+  function drawRibbon() {
+    const part = $('skala-teil');
+    if (!st.freq) { part.hidden = true; return; }
+    part.hidden = false;
+    const band = bandEdges(st.freq);
+    let lo, hi;
+    if (band) { lo = band.lo; hi = band.hi; } else { lo = st.center - st.span / 2; hi = st.center + st.span / 2; }
+    // keep the waterfall window visible
+    if (st.center) { lo = Math.min(lo, st.center - st.span / 2); hi = Math.max(hi, st.center + st.span / 2); }
+    const span = hi - lo;
+    $('ribbon-name').textContent = band ? (/Rundfunk|CB/.test(band.name) ? band.name : `${band.name}-Band`) : 'Ausschnitt';
+    $('ribbon-grenzen').textContent = `${mhzLabel(lo, span / 10)} bis ${mhzLabel(hi, span / 10)} MHz`;
+
+    const skala = $('skala');
+    const W = Math.max(200, skala.clientWidth), H = 70;
+    const x = (hz) => ((hz - lo) / span) * W;
+    const ns = 'http://www.w3.org/2000/svg';
+    const svg = document.createElementNS(ns, 'svg');
+    svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
+    svg.setAttribute('width', W);
+    svg.setAttribute('height', H);
+    const add = (tag, attrs, text) => {
+      const n = document.createElementNS(ns, tag);
+      for (const [k, v] of Object.entries(attrs)) n.setAttribute(k, v);
+      if (text != null) n.textContent = text;
+      svg.append(n);
+      return n;
+    };
+    if (st.center) {
+      add('rect', { x: x(st.center - st.span / 2), y: 0, height: 7, rx: 2,
+        width: Math.max(2, x(st.center + st.span / 2) - x(st.center - st.span / 2)), class: 'sdr-ausschnitt' });
+    }
+    const big = niceStep(span / 9), small = big / 5;
+    for (let t = Math.ceil(lo / small) * small; t <= hi; t += small) {
+      const major = Math.abs(t / big - Math.round(t / big)) < 1e-6;
+      add('line', { x1: x(t), x2: x(t), y1: major ? 51 : 55, y2: 59, stroke: 'currentColor', 'stroke-width': major ? 1.5 : 1, opacity: major ? 0.9 : 0.5 });
+      if (major) add('text', { x: x(t), y: 69, 'text-anchor': x(t) < 30 ? 'start' : x(t) > W - 30 ? 'end' : 'middle', class: 'rm-skala-text' }, mhzLabel(t, big));
+    }
+    const pb = passbandRange();
+    if (pb && st.freq >= lo && st.freq <= hi) {
+      const [pl, ph] = [pb[0] - st.freq, pb[1] - st.freq];
+      const a = x(st.freq + pl), e = x(st.freq + ph), slope = Math.min(6, (e - a) / 4);
+      add('path', { d: `M${a},50 L${a + slope},41 L${e - slope},41 L${e},50`, fill: 'none', stroke: '#f5d90a', 'stroke-width': 2 });
+      const lbl = (hz) => (hz > 0 ? '+' : '') + (Math.abs(hz) >= 1000 ? `${Math.round(hz / 100) / 10}k` : String(Math.round(hz)));
+      add('text', { x: a - 3, y: 49, 'text-anchor': 'end', class: 'rm-skala-durchlass' }, lbl(pl));
+      add('text', { x: e + 3, y: 49, 'text-anchor': 'start', class: 'rm-skala-durchlass' }, lbl(ph));
+      add('line', { x1: x(st.freq), x2: x(st.freq), y1: 16, y2: 59, stroke: '#ef4444', 'stroke-width': 2 });
+    }
+    skala.replaceChildren(svg);
+    for (const bm of st.bookmarks) {
+      if (bm.freq < lo || bm.freq > hi) continue;
+      const k = document.createElement('button');
+      k.type = 'button';
+      k.className = 'rm-marke';
+      k.style.left = `${(x(bm.freq) / W) * 100}%`;
+      k.title = `${bm.name} · ${(bm.freq / 1e6).toFixed(4)} MHz ${bm.mode.toUpperCase()}`;
+      k.textContent = bm.name;
+      k.addEventListener('click', (ev) => { ev.stopPropagation(); gotoBookmark(bm); });
+      skala.appendChild(k);
+    }
+    st.ribbon = { lo, hi };
+  }
+
+  function ribbonHz(ev) {
+    const r = $('skala').getBoundingClientRect();
+    return st.ribbon.lo + ((ev.clientX - r.left) / r.width) * (st.ribbon.hi - st.ribbon.lo);
   }
 
   // ------------------------------------------------------------ audio
@@ -290,13 +428,20 @@
 
   function setVolume() {
     const v = Number($('vol').value) / 100;
-    if (gainNode) gainNode.gain.value = v * v * 2;
+    if (gainNode) gainNode.gain.value = st.muted ? 0 : v * v * 2;
+    $('vol-wert').textContent = `${$('vol').value} %`;
     store.set('vol', $('vol').value);
+  }
+
+  function setMuted(m) {
+    st.muted = m;
+    $('stumm').setAttribute('aria-pressed', String(m));
+    setVolume();
   }
 
   function onAudio(buf) {
     const dv = new DataView(buf);
-    updateSmeter(dv.getInt16(1, true) / 10);
+    updateMeter(dv.getInt16(1, true) / 10);
     if (!actx || !st.listening) return;
     const pred = dv.getInt16(3, true), index = dv.getUint8(5);
     const bytes = new Uint8Array(buf, 6);
@@ -313,7 +458,9 @@
     nextTime += ab.duration;
   }
 
-  function updateSmeter(db) {
+  function updateMeter(db) {
+    const bar = $('rm-balken-s');
+    bar.style.setProperty('--breite', `${bar.clientWidth}px`);
     const pct = Math.max(0, Math.min(100, ((db + 130) / 110) * 100));
     $('smbar').style.width = `${pct}%`;
     $('smval').textContent = `${db.toFixed(0)} dBFS`;
@@ -344,26 +491,34 @@
     st.listening = on;
     if (!on) st.wantAudio = false;
     const b = $('audio');
-    b.textContent = on ? '■ Stopp' : '▶ Hören';
-    b.classList.toggle('an', on);
-    if (!on) { $('smbar').style.width = '0'; $('smval').textContent = '– dBFS'; }
+    b.textContent = on ? 'Audio stoppen' : 'Audio starten';
+    b.setAttribute('aria-pressed', String(on));
+    if (!on) { $('smbar').style.width = '0'; $('smval').textContent = '–'; }
+    updateMeterInfo();
   }
 
-  // ------------------------------------------------------------ frequency display
+  function updateMeterInfo() {
+    const ant = (st.listening && st.audioAnt) ? st.audioAnt : st.viewAnt;
+    const parts = [];
+    if (ant) parts.push(`Antenne <strong>${esc(ant)}</strong>`);
+    if (st.status) parts.push(`Empfänger frei <strong>${st.status.free} von ${st.status.total}</strong>`);
+    $('meter-werte').innerHTML = parts.map((p) => `<span>${p}</span>`).join('');
+  }
+
+  // ------------------------------------------------------------ frequency display (as on /remote)
 
   function renderFreq() {
     if (st.editing) return;
-    const el = $('freq');
-    const digits = String(Math.round(st.freq)).padStart(8, '0');
-    const first = Math.min(digits.search(/[1-9]/) < 0 ? 7 : digits.search(/[1-9]/), 7);
-    let html = '';
-    for (let i = 0; i < digits.length; i++) {
-      const pos = digits.length - 1 - i;
-      const cls = i < first ? 'ziffer fuehrend' : 'ziffer';
-      html += `<span class="${cls}" data-mult="${10 ** pos}">${digits[i]}</span>`;
+    const n = 8;
+    const s = String(Math.max(0, Math.round(st.freq))).padStart(n, '0');
+    let html = '', leading = true;
+    for (let i = 0; i < n; i++) {
+      const pos = n - 1 - i;
+      if (s[i] !== '0' || pos <= 6) leading = false;
+      html += `<span class="ziffer${leading ? ' fuehrend' : ''}" data-pos="${pos}">${s[i]}</span>`;
       if (pos === 6 || pos === 3) html += '<span class="trenner">.</span>';
     }
-    el.innerHTML = html;
+    $('freq').innerHTML = html;
   }
 
   function editFreq() {
@@ -372,17 +527,23 @@
     const el = $('freq');
     const inp = document.createElement('input');
     inp.inputMode = 'decimal';
-    inp.value = (st.freq / 1000).toFixed(2);
-    inp.setAttribute('aria-label', 'Frequenz in kHz');
-    el.innerHTML = '';
-    el.appendChild(inp);
+    inp.value = (st.freq / 1e6).toFixed(6);
+    inp.setAttribute('aria-label', 'Frequenz in MHz eintippen');
+    el.replaceChildren(inp);
     inp.focus();
     inp.select();
     const done = (apply) => {
       if (!st.editing) return;
       st.editing = false;
-      const khz = parseFloat(inp.value.trim().replace(',', '.'));
-      if (apply && isFinite(khz) && khz > 0) tuneTo(khz * 1000);
+      if (apply) {
+        const raw = inp.value.trim().replace(',', '.');
+        let hz = parseFloat(raw);
+        if (isFinite(hz) && hz > 0) {
+          // MHz as on /remote; large numbers are taken as kHz or Hz
+          hz = hz < 100 ? hz * 1e6 : hz < 100000 ? hz * 1e3 : hz;
+          tuneTo(hz);
+        }
+      }
       renderFreq();
     };
     inp.addEventListener('keydown', (e) => {
@@ -445,12 +606,17 @@
   function tuneTo(f, snap) {
     if (snap) f = Math.round(f / st.step) * st.step;
     f = Math.max(0, Math.min(maxFreq(), Math.round(f)));
+    const bandBefore = bandEdges(st.freq);
     st.freq = f;
     renderFreq();
     store.set('freq', f);
     ensureView(f);
     updatePassband();
     drawSpectrum();
+    if (!EMBED) {
+      drawRibbon();
+      if (bandEdges(f) !== bandBefore) renderBookmarkBox();
+    }
     sendTune();
   }
 
@@ -473,10 +639,19 @@
   }
 
   function requestBand(id) {
-    if (st.viewBand === id && st.view >= 0) return;
+    if (st.viewBand === id && st.view >= 0) {
+      if (st.userBand === id) { st.userBand = null; gotoBandCentre(id); }
+      return;
+    }
     if (st.pending === `b${id}`) return;
     st.pending = `b${id}`;
     send({ cmd: 'band', id });
+  }
+
+  function gotoBandCentre(id) {
+    const b = st.cfg.bands[id];
+    setMode(MODES[b.mode] ? b.mode : 'usb', true);
+    tuneTo(b.center);
   }
 
   function onView(m) {
@@ -486,43 +661,26 @@
     st.viewBand = m.band;
     st.center = m.center;
     st.span = m.span;
+    st.viewAnt = m.antenna || '';
     if (changed) clearHistory();
-    syncBandSelect();
     if (st.userBand !== null && st.userBand === m.band) {
-      // band chosen in the list: go to its centre with its default mode
-      const b = st.cfg.bands[m.band];
       st.userBand = null;
-      setMode(MODES[b.mode] ? b.mode : 'usb', true);
-      tuneTo(b.center);
+      gotoBandCentre(m.band);
     }
-    drawScale();
+    if (!EMBED) { markBand(); drawRibbon(); updateMeterInfo(); }
+    drawWfScale();
     updatePassband();
     drawWaterfall();
     drawSpectrum();
   }
 
-  function syncBandSelect() {
-    const sel = $('band');
-    let free = sel.querySelector('option[data-frei]');
-    if (st.viewBand >= 0) {
-      if (free) free.remove();
-      sel.value = st.viewBand;
-    } else {
-      if (!free) {
-        free = document.createElement('option');
-        free.dataset.frei = '1';
-        sel.insertBefore(free, sel.firstChild);
-      }
-      free.value = 'frei';
-      free.textContent = `Frei, ${(st.center / 1e6).toFixed(3)} MHz`;
-      sel.value = 'frei';
-    }
-  }
-
   function clickTune(ev, canvas) {
+    if (canvas === spec) {
+      const b = bookmarkAt(ev);
+      if (b) { gotoBookmark(b); return; }
+    }
     const r = canvas.getBoundingClientRect();
-    const f = xToFreq(ev.clientX - r.left, r.width);
-    tuneTo(f, true);
+    tuneTo(xToFreq(ev.clientX - r.left, r.width), true);
     notifyParent();
   }
 
@@ -545,7 +703,16 @@
     if (!st.center) return;
     const r = canvas.getBoundingClientRect();
     const f = xToFreq(ev.clientX - r.left, r.width);
-    $('hover').textContent = `${(f / 1000).toFixed(2)} kHz`;
+    const b = canvas === spec ? bookmarkAt(ev) : null;
+    canvas.style.cursor = b ? 'pointer' : '';
+    $('hover').textContent = b ? `${b.name} · ${(b.freq / 1e6).toFixed(4)} MHz ${b.mode.toUpperCase()}`
+      : `${(f / 1e6).toFixed(4)} MHz`;
+  }
+
+  function gotoBookmark(b) {
+    setMode(MOD_ALIAS[b.mode] || 'usb', true);
+    tuneTo(b.freq);
+    notifyParent();
   }
 
   // ------------------------------------------------------------ OpenWebRX-compatible control
@@ -590,6 +757,391 @@
     if (d.freq) window.UI.setFrequency(d.freq);
   });
 
+  // ------------------------------------------------------------ accounts and administration
+
+  const ROLE_RANK = { nutzer: 1, lesezeichen: 2, admin: 3 };
+  const ROLE_LABEL = { nutzer: 'Nutzer', lesezeichen: 'Lesezeichen', admin: 'Admin' };
+  const ICON_PAPIERKORB = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor"'
+    + ' stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">'
+    + '<path d="M4 7h16"/><path d="M10 11.5v5"/><path d="M14 11.5v5"/>'
+    + '<path d="M6 7l.9 11.1A2 2 0 0 0 8.9 20h6.2a2 2 0 0 0 2-1.9L18 7"/>'
+    + '<path d="M9.5 7V5.4a1 1 0 0 1 1-1h3a1 1 0 0 1 1 1V7"/></svg>';
+  const ICON_STIFT = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor"'
+    + ' stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">'
+    + '<path d="M4 20h4.2l9.4-9.4a2.1 2.1 0 0 0 0-3l-1.2-1.2a2.1 2.1 0 0 0-3 0L4 15.8V20Z"/>'
+    + '<path d="M14.5 6.5l3 3"/></svg>';
+
+  const can = (role) => (ROLE_RANK[st.role] || 0) >= ROLE_RANK[role];
+  const token = () => store.get('token', null);
+
+  // Errors go to the dialog that is open (top of it), otherwise to a toast.
+  function showError(msg) {
+    const open = [...document.querySelectorAll('dialog[open]')].pop();
+    const box = open && open.querySelector('[data-fehler]');
+    if (box) { box.textContent = msg; box.hidden = false; return; }
+    toast(msg, 'fehler');
+  }
+  function clearError(dlg) {
+    const box = dlg.querySelector('[data-fehler]');
+    if (box) box.hidden = true;
+  }
+  function openDialog(id) {
+    const d = $(id);
+    clearError(d);
+    if (!d.open) d.showModal();
+    return d;
+  }
+
+  let askYes = null;
+  function ask(title, text, yesLabel, onYes) {
+    $('dlg-frage-titel').textContent = title;
+    $('dlg-frage-text').textContent = text;
+    $('dlg-frage-ja').innerHTML = `${ICON_PAPIERKORB}<span>${esc(yesLabel)}</span>`;
+    askYes = onYes;
+    openDialog('dlg-frage');
+  }
+
+  function renderAccount() {
+    const logged = Boolean(st.user);
+    $('anmelden').hidden = logged;
+    $('konto-menu').hidden = !logged;
+    if (!logged) $('konto-menu').removeAttribute('open');
+    if (logged) {
+      $('konto-name').textContent = st.user;
+      $('menu-verwaltung-info').textContent = can('admin') ? 'Lesezeichen, Antennen, Benutzer, Station, Passwort'
+        : can('lesezeichen') ? 'Lesezeichen, Passwort' : 'Passwort ändern';
+    }
+    $('lz-neu').hidden = !can('lesezeichen');
+    document.querySelectorAll('#tabs .rm-tab').forEach((t) => { t.hidden = !can(t.dataset.rolle); });
+    if (!logged && $('dlg-verwaltung').open) $('dlg-verwaltung').close();
+    renderBookmarkBox();
+    renderChatForm();
+  }
+
+  let pendingLogin = null, pendingPasswd = null;
+
+  function onChallenge(m) {
+    if (m.purpose === 'login' && pendingLogin) {
+      const p = pendingLogin;
+      pendingLogin = null;
+      send({ cmd: 'login', user: p.user, proof: window.R2Kdf.proof(p.pass, m.salt, m.iter, m.nonce) });
+    } else if (m.purpose === 'passwd' && pendingPasswd) {
+      const p = pendingPasswd;
+      pendingPasswd = null;
+      send(Object.assign({ cmd: 'passwd', proof: window.R2Kdf.proof(p.old, m.salt, m.iter, m.nonce) },
+        window.R2Kdf.newPassword(p.neu, PBKDF2_ITER)));
+    }
+  }
+
+  function onLogin(m) {
+    st.user = m.user;
+    st.role = m.role;
+    if (m.token) store.set('token', m.token);
+    $('login-pass').value = '';
+    if ($('dlg-login').open) {
+      $('dlg-login').close();
+      toast(`Angemeldet als ${m.user}.`, 'gut');
+    }
+    renderAccount();
+    if ($('dlg-verwaltung').open) refreshTab();
+  }
+
+  function onLogout() {
+    st.user = null;
+    st.role = null;
+    store.set('token', null);
+    renderAccount();
+  }
+
+  // ---- bookmarks
+
+  function onBookmarks(list) {
+    st.bookmarks = list;
+    renderBookmarkBox();
+    renderBookmarkTable();
+    drawSpectrum();
+    if (!EMBED) drawRibbon();
+  }
+
+  // box on the page: as lesezeichenZeigen() on /remote
+  function renderBookmarkBox() {
+    if (EMBED) return;
+    const box = $('lz-box');
+    const onlyBand = $('lz-nurband').checked;
+    const band = bandEdges(st.freq);
+    const list = st.bookmarks.filter((x) => !onlyBand || !band || (x.freq >= band.lo && x.freq <= band.hi));
+    if (!list.length) {
+      box.innerHTML = `<p class="field-hint">${st.bookmarks.length ? 'Auf diesem Band gibt es noch keine Lesezeichen.'
+        : can('lesezeichen') ? 'Noch keine Lesezeichen. Mit „＋ Lesezeichen hier“ merkst du dir die aktuelle Frequenz.'
+          : 'Noch keine Lesezeichen.'}</p>`;
+      return;
+    }
+    const rows = list.map((b) => `<tr data-id="${b.id}"><td class="mono num">${(b.freq / 1e6).toFixed(4)}</td>`
+      + `<td>${esc(b.mode.toUpperCase())}</td><td>${esc(b.name)}</td>`
+      + '<td><div class="rm-knopfreihe"><button type="button" class="btn-sm" data-hin>Abstimmen</button>'
+      + (can('lesezeichen') ? `<button type="button" class="btn-sm btn-stift" title="Bearbeiten" aria-label="Bearbeiten">${ICON_STIFT}</button>`
+        + `<button type="button" class="btn-sm btn-weg" title="Lesezeichen löschen" aria-label="Lesezeichen löschen">${ICON_PAPIERKORB}</button>` : '')
+      + '</div></td></tr>').join('');
+    box.innerHTML = '<div class="data-wrap"><table class="data rm-klein-tabelle"><thead><tr>'
+      + '<th class="num">MHz</th><th>Art</th><th>Name</th><th></th></tr></thead>'
+      + `<tbody>${rows}</tbody></table></div>`;
+    box.querySelectorAll('tr[data-id]').forEach((tr) => {
+      const b = st.bookmarks.find((x) => String(x.id) === tr.dataset.id);
+      tr.querySelector('[data-hin]').addEventListener('click', () => gotoBookmark(b));
+      const pen = tr.querySelector('.btn-stift');
+      if (pen) pen.addEventListener('click', () => bookmarkDialog(b));
+      const del = tr.querySelector('.btn-weg');
+      if (del) del.addEventListener('click', () => ask('Lesezeichen löschen?', `„${b.name}“ verschwindet für alle Besucher.`,
+        'Löschen', () => send({ cmd: 'bm_del', id: b.id })));
+    });
+  }
+
+  // table in the administration dialog
+  function renderBookmarkTable() {
+    if (EMBED) return;
+    const body = $('lz-liste');
+    body.innerHTML = '';
+    $('lz-leer').hidden = st.bookmarks.length > 0;
+    for (const b of st.bookmarks) {
+      const tr = document.createElement('tr');
+      tr.innerHTML = `<td>${esc(b.name)}</td><td class="num mono">${(b.freq / 1000).toFixed(2)} kHz</td>`
+        + `<td>${esc(b.mode.toUpperCase())}</td><td><div class="rm-knopfreihe">`
+        + `<button type="button" class="btn-sm btn-stift" title="Bearbeiten" aria-label="${esc(b.name)} bearbeiten">${ICON_STIFT}</button>`
+        + `<button type="button" class="btn-sm btn-weg" title="Löschen" aria-label="${esc(b.name)} löschen">${ICON_PAPIERKORB}</button>`
+        + '</div></td>';
+      tr.querySelector('.btn-stift').addEventListener('click', () => bookmarkDialog(b));
+      tr.querySelector('.btn-weg').addEventListener('click', () =>
+        ask('Lesezeichen löschen?', `„${b.name}“ verschwindet für alle Besucher.`, 'Löschen',
+          () => send({ cmd: 'bm_del', id: b.id })));
+      body.appendChild(tr);
+    }
+  }
+
+  let bmEdit = null;
+  function bookmarkDialog(b) {
+    bmEdit = b || null;
+    $('dlg-lz-titel').textContent = b ? 'Lesezeichen bearbeiten' : 'Neues Lesezeichen';
+    const sel = $('lz-mode');
+    if (!sel.options.length) {
+      for (const [k, m] of Object.entries(MODES)) {
+        const o = document.createElement('option');
+        o.value = k;
+        o.textContent = m.label;
+        sel.appendChild(o);
+      }
+    }
+    $('lz-name').value = b ? b.name : '';
+    $('lz-freq').value = ((b ? b.freq : st.freq) / 1000).toFixed(2);
+    sel.value = MOD_ALIAS[b ? b.mode : st.mode] || 'usb';
+    openDialog('dlg-lz');
+    $('lz-name').focus();
+  }
+
+  function saveBookmark(ev) {
+    ev.preventDefault();
+    const khz = parseFloat($('lz-freq').value.trim().replace(',', '.'));
+    if (!isFinite(khz) || khz <= 0) { showError('Frequenz bitte in kHz eingeben, z. B. 7074 oder 7074,5.'); return; }
+    send({ cmd: 'bm_set', id: bmEdit ? bmEdit.id : 0, name: $('lz-name').value.trim(),
+      freq: Math.round(khz * 1000), mode: $('lz-mode').value });
+    $('dlg-lz').close();
+  }
+
+  // ---- administration dialog
+
+  let activeTab = null;
+  function openAdmin(tab) {
+    const tabs = [...document.querySelectorAll('#tabs .rm-tab')].filter((t) => !t.hidden);
+    if (!tabs.length) return;
+    const want = tab || activeTab;
+    selectTab(tabs.find((t) => t.dataset.tab === want) ? want : tabs[0].dataset.tab);
+    openDialog('dlg-verwaltung');
+  }
+
+  function selectTab(name) {
+    activeTab = name;
+    document.querySelectorAll('#tabs .rm-tab').forEach((t) => t.setAttribute('aria-selected', String(t.dataset.tab === name)));
+    document.querySelectorAll('#dlg-verwaltung .rm-tab-seite').forEach((s) => { s.hidden = s.dataset.seite !== name; });
+    clearError($('dlg-verwaltung'));
+    refreshTab();
+  }
+
+  function refreshTab() {
+    if (activeTab === 'nutzer') send({ cmd: 'users' });
+    if (activeTab === 'ant') send({ cmd: 'antennas' });
+    if (activeTab === 'station' && st.cfg) {
+      $('st-title').value = st.cfg.title || '';
+      $('st-callsign').value = st.cfg.callsign || '';
+      $('st-location').value = st.cfg.location || '';
+      $('st-locator').value = st.cfg.locator || '';
+      $('st-access').value = st.cfg.access || 'open';
+      $('st-chat').value = st.cfg.chat || 'all';
+    }
+    if (activeTab === 'konto') $('konto-info').textContent = `Angemeldet als ${st.user} (${ROLE_LABEL[st.role] || ''}).`;
+    if (activeTab === 'lz') renderBookmarkTable();
+  }
+
+  function onUsers(list) {
+    const body = $('nutzer-liste');
+    body.innerHTML = '';
+    for (const u of list) {
+      const tr = document.createElement('tr');
+      const self = st.user && u.name.toLowerCase() === st.user.toLowerCase();
+      tr.innerHTML = `<td>${esc(u.name)}${self ? ' <span class="muted">(du)</span>' : ''}</td>`
+        + `<td>${esc(ROLE_LABEL[u.role] || u.role)}</td><td>${u.online ? 'ja' : 'nein'}</td>`
+        + '<td><div class="rm-knopfreihe">'
+        + `<button type="button" class="btn-sm btn-stift" title="Bearbeiten" aria-label="${esc(u.name)} bearbeiten">${ICON_STIFT}</button>`
+        + (self ? '' : `<button type="button" class="btn-sm btn-weg" title="Löschen" aria-label="${esc(u.name)} löschen">${ICON_PAPIERKORB}</button>`)
+        + '</div></td>';
+      tr.querySelector('.btn-stift').addEventListener('click', () => userDialog(u));
+      const del = tr.querySelector('.btn-weg');
+      if (del) del.addEventListener('click', () =>
+        ask('Konto löschen?', `„${u.name}“ wird gelöscht und sofort überall abgemeldet.`, 'Konto löschen',
+          () => send({ cmd: 'user_del', name: u.name })));
+      body.appendChild(tr);
+    }
+  }
+
+  let userEdit = null;
+  function userDialog(u) {
+    userEdit = u || null;
+    $('dlg-nutzer-titel').textContent = u ? `Konto ${u.name}` : 'Neues Konto';
+    $('nu-name').value = u ? u.name : '';
+    $('nu-name').readOnly = Boolean(u);
+    $('nu-role').value = u ? u.role : 'nutzer';
+    $('nu-pass').value = '';
+    $('nu-pass').required = !u;
+    $('nu-pass-hint').textContent = u ? 'Leer lassen, um es zu behalten. Ein neues Passwort meldet das Konto überall ab.' : 'Mindestens 8 Zeichen.';
+    openDialog('dlg-nutzer');
+    (u ? $('nu-role') : $('nu-name')).focus();
+  }
+
+  function saveUser(ev) {
+    ev.preventDefault();
+    const pw = $('nu-pass').value;
+    if ((!userEdit || pw) && pw.length < 8) { showError('Das Passwort braucht mindestens 8 Zeichen.'); return; }
+    const msg = { cmd: 'user_set', name: $('nu-name').value.trim(), role: $('nu-role').value };
+    // only salt and hash leave the browser
+    if (pw) Object.assign(msg, window.R2Kdf.newPassword(pw, PBKDF2_ITER));
+    send(msg);
+    $('dlg-nutzer').close();
+  }
+
+  function onAntennas(m) {
+    const box = $('ant-liste');
+    box.innerHTML = '';
+    for (const a of m.list) {
+      const k = document.createElement('form');
+      k.className = 'rm-kasten';
+      const id = `ant${a.input}`;
+      k.innerHTML = `<div class="rm-kasten-kopf">Eingang ${a.input} (ANT${a.input})</div>
+        <div class="rm-kasten-inhalt">
+          <div class="field"><label for="${id}-name">Name</label>
+            <input id="${id}-name" maxlength="40" value="${esc(a.name)}"></div>
+          <div class="field"><label for="${id}-ranges">Bereiche <span class="einheit">kHz</span></label>
+            <input id="${id}-ranges" value="${esc(a.ranges.replace(/,/g, ', '))}" placeholder="1810-2000, 3500-3800" spellcheck="false">
+            <span class="field-hint">von-bis, mit Komma getrennt. Leer: dieser Eingang bekommt nur, was sonst keiner abdeckt.</span></div>
+          <div class="sdr-zwei">
+            <div class="field"><label for="${id}-gain">Verstärkung <span class="einheit">dB</span></label>
+              <input id="${id}-gain" type="number" min="-9" max="32" step="1" inputmode="numeric" value="${a.gain}"></div>
+            <div class="field"><label for="${id}-att">Abschwächer <span class="einheit">dB</span></label>
+              <input id="${id}-att" type="number" min="0" max="31" step="1" inputmode="numeric" value="${a.att}"></div>
+          </div>
+          <label class="rm-schalter"><input type="radio" name="ant-default" id="${id}-def" ${m.default === a.input ? 'checked' : ''}> Für alle übrigen Frequenzen</label>
+          <p class="btn-row"><button type="submit" class="btn">Speichern</button></p>
+        </div>`;
+      k.addEventListener('submit', (ev) => {
+        ev.preventDefault();
+        send({ cmd: 'ant_set', input: a.input, name: $(`${id}-name`).value.trim(),
+          ranges: $(`${id}-ranges`).value.replace(/\s+/g, ''), gain: Number($(`${id}-gain`).value),
+          att: Number($(`${id}-att`).value), default: $(`${id}-def`).checked ? 1 : 0 });
+        toast(`Eingang ${a.input} gespeichert.`, 'gut');
+      });
+      box.appendChild(k);
+    }
+  }
+
+  function onOk(what) {
+    if (what === 'passwd') {
+      ['pw-alt', 'pw-neu', 'pw-neu2'].forEach((id) => { $(id).value = ''; });
+      toast('Passwort geändert.', 'gut');
+    }
+    if (what === 'station') toast('Station gespeichert.', 'gut');
+  }
+
+  // ------------------------------------------------------------ chat (as on /remote)
+
+  function chatAllowed() {
+    const mode = (st.cfg && st.cfg.chat) || 'all';
+    return mode === 'all' || (mode === 'login' && Boolean(st.user));
+  }
+
+  function renderChatForm() {
+    if (EMBED || !st.cfg) return;
+    const mode = st.cfg.chat || 'all';
+    $('chat-kasten').hidden = mode === 'off';
+    $('chat-form').hidden = !chatAllowed();
+    $('chat-name-feld').hidden = !chatAllowed() || Boolean(st.user);
+    $('chat-hinweis').textContent = chatAllowed()
+      ? 'Mit allen, die gerade zuhören. Die letzten 30 Nachrichten sieht, wer dazukommt; gespeichert wird nichts.'
+      : 'Mitschreiben können hier nur angemeldete Nutzer. Lesen geht ohne Anmeldung.';
+  }
+
+  function onChat(m) {
+    st.chat.push(m);
+    if (st.chat.length > 200) st.chat.shift();
+    if (EMBED) return;
+    const box = $('chat-liste');
+    const atEnd = box.scrollHeight - box.scrollTop - box.clientHeight < 4;
+    box.innerHTML = st.chat.map((c) => {
+      const own = st.user ? (!c.guest && c.who === st.user) : (c.guest && c.who === ($('chat-name').value.trim() || null));
+      return `<div class="rm-chat-zeile"><span class="rm-chat-wer${own ? ' rm-chat-eigen' : ''}">${esc(c.who)}`
+        + `${c.guest ? ' <span class="sdr-chat-gast">(Gast)</span>' : ''}</span>`
+        + `<span class="rm-chat-zeit mono">${esc((c.ts || '').slice(11, 16))} UTC</span>`
+        + `<span class="rm-chat-text">${esc(c.text)}</span></div>`;
+    }).join('');
+    if (atEnd) box.scrollTop = box.scrollHeight;
+  }
+
+  // ------------------------------------------------------------ report a problem (afu.tools)
+
+  const AFU = 'https://afu.tools';
+  async function checkOnline() {
+    try {
+      await fetch(`${AFU}/api/v1/health`, { mode: 'no-cors', cache: 'no-store' });
+      st.online = true;
+    } catch (e) {
+      st.online = false;
+    }
+    $('melden').hidden = !st.online;
+  }
+
+  async function sendReport(ev) {
+    ev.preventDefault();
+    const c = st.cfg || {};
+    const daten = {
+      art: $('melden-art').value, titel: $('melden-titel').value.trim(), text: $('melden-text').value.trim(),
+      rufzeichen: st.user || $('melden-ruf').value.trim(),
+      station: `R2T2 WebSDR ${[c.callsign, c.location].filter(Boolean).join(' ')}`.trim(),
+      geraet: 'R2T2 WebSDR', version: c.version || '',
+      technisch: `Programm: R2T2 WebSDR ${c.version || ''}\nFrequenz: ${st.freq} Hz ${st.mode}\n`
+        + `Browser: ${navigator.userAgent}\nFenster: ${innerWidth}x${innerHeight}`,
+    };
+    try {
+      const r = await fetch(`${AFU}/api/v1/remote/melden`, { method: 'POST',
+        headers: { 'Content-Type': 'text/plain' }, body: JSON.stringify(daten) });
+      const d = await r.json();
+      if (d.ok) {
+        $('dlg-melden').close();
+        ['melden-titel', 'melden-text'].forEach((id) => { $(id).value = ''; });
+        toast('Danke, die Meldung ist angekommen.', 'gut');
+      } else {
+        showError(d.text || 'Das hat nicht geklappt.');
+      }
+    } catch (e) {
+      showError('afu.tools ist gerade nicht erreichbar. Versuch es später noch einmal.');
+    }
+  }
+
   // ------------------------------------------------------------ websocket
 
   function send(obj) {
@@ -597,20 +1149,20 @@
   }
 
   function onConfig(c) {
+    const first = !st.gotConfig;
+    st.gotConfig = true;
     st.cfg = c;
     st.span = c.span;
     document.title = c.title || 'R2T2 WebSDR';
-    $('title').textContent = c.title || 'R2T2 WebSDR';
-    $('station').textContent = [c.callsign, c.location, c.locator].filter(Boolean).join(' · ');
-    const sel = $('band');
-    sel.innerHTML = '';
-    c.bands.forEach((b) => {
-      const o = document.createElement('option');
-      o.value = b.id;
-      o.textContent = `${b.name} (${(b.center / 1e6).toFixed(3)} MHz)`;
-      sel.appendChild(o);
-    });
-
+    $('title').textContent = c.callsign || c.title || 'R2T2 WebSDR';
+    $('station').textContent = ['R2T2', c.location, c.locator].filter(Boolean).join(' · ');
+    $('fuss-station').textContent = [c.callsign, c.location, c.locator].filter(Boolean).join(' · ') || c.title || 'R2T2 WebSDR';
+    $('fuss-version').textContent = `Version ${c.version}`;
+    renderChatForm();
+    // later copies (station or antennas changed by an admin) only refresh the texts
+    if (!first) return;
+    if (!EMBED && token()) send({ cmd: 'auth', token: token() });
+    if (!EMBED) renderBandButtons();
     st.view = -1;
     st.viewBand = -1;
     st.pending = null;
@@ -628,14 +1180,14 @@
   }
 
   function onStatus(m) {
-    $('users').textContent = `${m.users} Nutzer · ${m.listeners} hören`;
-    $('fuss').innerHTML = `R2T2 WebSDR ${st.cfg ? st.cfg.version : ''} · ${m.free} von ${m.total} Empfängern frei`
-      + ' · Schnittstelle: <a href="api/status">api/status</a>, <a href="api/config">api/config</a>';
+    st.status = m;
+    $('users').textContent = `${m.users} ${m.users === 1 ? 'Besucher' : 'Besucher'} · ${m.listeners} hören`;
+    updateMeterInfo();
   }
 
   function setConn(on) {
     const el = $('conn');
-    el.textContent = on ? 'Verbunden' : 'Getrennt';
+    el.textContent = on ? 'online' : 'offline';
     el.classList.toggle('an', on);
     el.classList.toggle('aus', !on);
   }
@@ -649,6 +1201,8 @@
     st.ws = ws;
     let ping = 0;
     ws.onopen = () => {
+      st.gotConfig = false;
+      st.chat = [];
       setConn(true);
       retry = 1000;
       ping = setInterval(() => send({ cmd: 'ping' }), 10000);
@@ -670,8 +1224,21 @@
           case 'config': onConfig(m); break;
           case 'view': onView(m); break;
           case 'status': onStatus(m); break;
-          case 'audio': setListening(m.on); if (m.on) st.wantAudio = true; break;
-          case 'error': st.pending = null; toast(m.msg, 'fehler'); break;
+          case 'audio':
+            setListening(m.on);
+            if (m.on) st.wantAudio = true;
+            st.audioAnt = m.antenna || '';
+            updateMeterInfo();
+            break;
+          case 'bookmarks': onBookmarks(m.list); break;
+          case 'chat': onChat(m); break;
+          case 'challenge': onChallenge(m); break;
+          case 'login': onLogin(m); break;
+          case 'logout': onLogout(); break;
+          case 'users': onUsers(m.list); break;
+          case 'antennas': onAntennas(m); break;
+          case 'ok': onOk(m.what); break;
+          case 'error': st.pending = null; showError(m.msg); break;
           default: break;
         }
         return;
@@ -688,9 +1255,102 @@
   // ------------------------------------------------------------ wiring
 
   function tickClock() {
-    const d = new Date();
-    $('utc').textContent = `${d.toISOString().slice(11, 19)} UTC`;
-    $('datum').textContent = d.toLocaleDateString('de-DE', { timeZone: 'UTC', weekday: 'short', day: '2-digit', month: '2-digit', year: 'numeric' });
+    $('utc').textContent = `${new Date().toISOString().slice(11, 19)} UTC`;
+  }
+
+  // light/dark key in the header, same behaviour and storage key as afu.tools
+  function wireTheme() {
+    const k = document.querySelector('[data-theme-knopf]');
+    const root = document.documentElement;
+    const now = () => root.dataset.theme
+      || (window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark');
+    const show = () => { k.firstElementChild.textContent = now() === 'light' ? '🌙' : '☀️'; };
+    show();
+    k.addEventListener('click', () => {
+      const next = now() === 'light' ? 'dark' : 'light';
+      root.dataset.theme = next;
+      try { localStorage.setItem('afu.tools:theme', next); } catch (e) { /* storage unavailable */ }
+      show();
+    });
+  }
+
+  function wireDialogs() {
+    document.querySelectorAll('dialog [data-schliessen]').forEach((b) =>
+      b.addEventListener('click', () => b.closest('dialog').close()));
+    document.querySelectorAll('dialog').forEach((d) =>
+      d.addEventListener('click', (e) => { if (e.target === d) d.close(); }));
+    $('dlg-frage-ja').addEventListener('click', () => {
+      $('dlg-frage').close();
+      if (askYes) askYes();
+      askYes = null;
+    });
+
+    $('anmelden').addEventListener('click', () => {
+      $('login-pass').value = '';
+      openDialog('dlg-login');
+      $('login-user').focus();
+    });
+    $('form-login').addEventListener('submit', (ev) => {
+      ev.preventDefault();
+      clearError($('dlg-login'));
+      // the password stays in the browser: ask for a challenge, answer with a proof
+      pendingLogin = { user: $('login-user').value.trim(), pass: $('login-pass').value };
+      send({ cmd: 'challenge', user: pendingLogin.user, purpose: 'login' });
+    });
+    // account menu: closes on a click elsewhere and on Escape, as on afu.tools
+    const menu = $('konto-menu');
+    document.addEventListener('click', (ev) => { if (!menu.contains(ev.target)) menu.removeAttribute('open'); });
+    document.addEventListener('keydown', (ev) => { if (ev.key === 'Escape') menu.removeAttribute('open'); });
+    $('abmelden').addEventListener('click', () => {
+      menu.removeAttribute('open');
+      send({ cmd: 'logout', token: token() });
+      onLogout();
+    });
+    $('menu-verwaltung').addEventListener('click', () => {
+      menu.removeAttribute('open');
+      openAdmin(activeTab && activeTab !== 'konto' ? activeTab : null);
+    });
+    document.querySelectorAll('#tabs .rm-tab').forEach((t) => t.addEventListener('click', () => selectTab(t.dataset.tab)));
+
+    $('lz-neu').addEventListener('click', () => bookmarkDialog(null));
+    $('lz-plus').addEventListener('click', () => bookmarkDialog(null));
+    $('form-lz').addEventListener('submit', saveBookmark);
+    $('lz-nurband').addEventListener('change', renderBookmarkBox);
+    $('nutzer-plus').addEventListener('click', () => userDialog(null));
+    $('form-nutzer').addEventListener('submit', saveUser);
+
+    $('form-station').addEventListener('submit', (ev) => {
+      ev.preventDefault();
+      send({ cmd: 'station_set', title: $('st-title').value.trim(), callsign: $('st-callsign').value.trim().toUpperCase(),
+        location: $('st-location').value.trim(), locator: $('st-locator').value.trim(),
+        access: $('st-access').value, chat: $('st-chat').value });
+    });
+    $('form-passwort').addEventListener('submit', (ev) => {
+      ev.preventDefault();
+      if ($('pw-neu').value !== $('pw-neu2').value) { showError('Die beiden neuen Passwörter stimmen nicht überein.'); return; }
+      if ($('pw-neu').value.length < 8) { showError('Das neue Passwort braucht mindestens 8 Zeichen.'); return; }
+      pendingPasswd = { old: $('pw-alt').value, neu: $('pw-neu').value };
+      send({ cmd: 'challenge', user: st.user, purpose: 'passwd' });
+    });
+
+    $('chat-name').value = store.get('chatname', '');
+    $('chat-name').addEventListener('change', () => store.set('chatname', $('chat-name').value.trim()));
+    $('chat-form').addEventListener('submit', (ev) => {
+      ev.preventDefault();
+      const text = $('chat-text').value.trim();
+      if (!text) return;
+      const msg = { cmd: 'chat', text };
+      if (!st.user) {
+        const name = $('chat-name').value.trim();
+        if (!name) { toast('Bitte erst deinen Namen oder dein Rufzeichen eintragen.', 'warnung'); $('chat-name').focus(); return; }
+        msg.name = name;
+      }
+      send(msg);
+      $('chat-text').value = '';
+    });
+
+    $('melden').addEventListener('click', () => openDialog('dlg-melden'));
+    $('form-melden').addEventListener('submit', sendReport);
   }
 
   function init() {
@@ -702,8 +1362,9 @@
     renderBw();
     renderFreq();
     setConn(false);
+    showLevels();
 
-    [spec, wf, scale].forEach((c) => {
+    [spec, wf].forEach((c) => {
       c.addEventListener('click', (e) => clickTune(e, c));
       c.addEventListener('wheel', wheelTune, { passive: false });
       c.addEventListener('mousemove', (e) => hoverInfo(e, c));
@@ -712,52 +1373,60 @@
     window.addEventListener('hashchange', applyHash);
 
     if (!EMBED) {
+      wireTheme();
+      wireDialogs();
+      renderAccount();
       $('audio').addEventListener('click', toggleAudio);
       $('vol').addEventListener('input', setVolume);
+      $('stumm').addEventListener('click', () => setMuted(!st.muted));
       $('mode').addEventListener('change', (e) => setMode(e.target.value));
-      $('band').addEventListener('change', (e) => {
-        if (e.target.value === 'frei') return;
-        st.userBand = Number(e.target.value);
-        requestBand(st.userBand);
-      });
       $('bw').addEventListener('change', (e) => { st.bw = Number(e.target.value); tuneTo(st.freq); });
       $('step').addEventListener('change', (e) => { st.step = Number(e.target.value); });
       $('ab').addEventListener('click', () => tuneTo(Math.round(st.freq / st.step) * st.step - st.step));
       $('auf').addEventListener('click', () => tuneTo(Math.round(st.freq / st.step) * st.step + st.step));
-      $('sql').addEventListener('input', (e) => {
-        const v = Number(e.target.value);
-        const off = v <= -140;
-        $('sqlval').textContent = off ? 'aus' : `${v} dBFS`;
-        send({ cmd: 'squelch', level: off ? -999 : v });
-      });
-      $('wfmin').addEventListener('input', (e) => { st.wfMin = Math.min(Number(e.target.value), st.wfMax - 5); });
-      $('wfmax').addEventListener('input', (e) => { st.wfMax = Math.max(Number(e.target.value), st.wfMin + 5); });
+      const sendSquelch = () => {
+        const on = $('sql-art').value === 'schwelle';
+        $('sql-feld').hidden = !on;
+        $('sqlval').textContent = `${$('sql').value} dBFS`;
+        send({ cmd: 'squelch', level: on ? Number($('sql').value) : -999 });
+      };
+      $('sql-art').addEventListener('change', sendSquelch);
+      $('sql').addEventListener('input', sendSquelch);
+      $('wfmin').addEventListener('input', (e) => { st.wfMin = Math.min(Number(e.target.value), st.wfMax - 5); showLevels(); });
+      $('wfmax').addEventListener('input', (e) => { st.wfMax = Math.max(Number(e.target.value), st.wfMin + 5); showLevels(); });
       $('auto').addEventListener('click', () => { if (st.lastBins) autoLevels(st.lastBins); });
+
+      const sk = $('skala');
+      sk.addEventListener('click', (ev) => { if (st.ribbon) tuneTo(ribbonHz(ev), true); });
+      sk.addEventListener('wheel', wheelTune, { passive: false });
 
       const fr = $('freq');
       fr.addEventListener('click', editFreq);
       fr.addEventListener('wheel', (e) => {
+        if (st.editing) return;
         e.preventDefault();
-        const mult = Number(e.target.dataset && e.target.dataset.mult) || st.step;
+        const z = e.target.closest && e.target.closest('.ziffer');
+        const mult = z ? 10 ** Number(z.dataset.pos) : st.step;
         tuneTo(st.freq + (e.deltaY < 0 ? mult : -mult));
       }, { passive: false });
-      fr.addEventListener('keydown', (e) => {
-        if (e.key === 'Enter') { e.preventDefault(); editFreq(); }
-      });
+      fr.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); editFreq(); } });
       document.addEventListener('keydown', (e) => {
-        if (e.target instanceof HTMLInputElement || e.target instanceof HTMLSelectElement) return;
+        if (e.target instanceof HTMLInputElement || e.target instanceof HTMLSelectElement
+          || e.target instanceof HTMLTextAreaElement || document.querySelector('dialog[open]')) return;
         if (e.key === 'ArrowRight' || e.key === 'ArrowUp') { tuneTo(st.freq + st.step); e.preventDefault(); }
         if (e.key === 'ArrowLeft' || e.key === 'ArrowDown') { tuneTo(st.freq - st.step); e.preventDefault(); }
+        if (e.key === 'm' || e.key === 'M') setMuted(!st.muted);
       });
       tickClock();
       setInterval(tickClock, 1000);
+      checkOnline();
+      setInterval(checkOnline, 5 * 60 * 1000);
+      window.addEventListener('online', checkOnline);
     }
 
     if (window.ResizeObserver) new ResizeObserver(resize).observe($('wfbox'));
     else window.addEventListener('resize', resize);
-    // scale colours come from the theme tokens
-    const scheme = window.matchMedia && window.matchMedia('(prefers-color-scheme: light)');
-    if (scheme && scheme.addEventListener) scheme.addEventListener('change', drawScale);
+    if (!EMBED && window.ResizeObserver) new ResizeObserver(() => drawRibbon()).observe($('skala'));
     resize();
     connect();
   }

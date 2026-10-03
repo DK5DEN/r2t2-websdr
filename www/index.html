@@ -6,25 +6,59 @@
 <title>R2T2 WebSDR</title>
 <meta name="color-scheme" content="dark light">
 <link rel="icon" href="icon.svg" type="image/svg+xml">
-<link rel="stylesheet" href="style.css?v=20261003b">
+<link rel="stylesheet" href="afu-style.css?v=20261003j">
+<link rel="stylesheet" href="remote.css?v=20261003j">
+<link rel="stylesheet" href="sdr.css?v=20261003j">
+<script>
+  /* light/dark choice before the first paint, same key as afu.tools */
+  try { var t = localStorage.getItem('afu.tools:theme'); if (t === 'light' || t === 'dark') document.documentElement.dataset.theme = t; } catch (e) {}
+</script>
 </head>
 <body>
 <a class="skip" href="#inhalt">Zum Inhalt</a>
 
-<main id="inhalt" class="wrap sdr-app">
-  <noscript><p class="note">Der WebSDR braucht JavaScript.</p></noscript>
-
-  <!-- ------------------------------------------------------- Kopfzeile -->
-  <header class="sdr-kopf">
-    <div class="sdr-kopf-freq">
-      <div class="sdr-vfo-zeile">
-        <div id="freq" class="sdr-freq" tabindex="0" role="spinbutton"
-          aria-label="Empfangsfrequenz. Mausrad über einer Ziffer stimmt ab, Enter oder Klick zum Eintippen."></div>
-        <select id="mode" class="sdr-modus" aria-label="Betriebsart"></select>
+<header class="topbar"><div class="wrap weit bar">
+  <a class="brand" href="./"><img src="icon.svg" alt="" width="28" height="28"> R2T2 WebSDR</a>
+  <span class="rm-lokal-hinweis">Empfänger direkt am Gerät</span>
+  <div class="bar-actions">
+    <button class="theme-open" type="button" data-theme-knopf aria-label="Hell oder dunkel" title="Hell oder dunkel">
+      <span aria-hidden="true">🌓</span>
+    </button>
+    <button class="konto-open" type="button" id="anmelden" aria-label="Anmelden">
+      <span aria-hidden="true">👤</span><span class="nur-breit">Anmelden</span>
+    </button>
+    <!-- account menu as on afu.tools (builder/navigation.py) -->
+    <details class="konto-menu" id="konto-menu" hidden>
+      <summary class="konto-open" aria-label="Konto"><span aria-hidden="true">👤</span>
+        <span class="nur-breit" id="konto-name"></span><span class="konto-pfeil" aria-hidden="true">▾</span></summary>
+      <div class="konto-menu-inhalt">
+        <button type="button" id="menu-verwaltung"><span class="ico" aria-hidden="true">🛠</span><span><strong>Verwaltung</strong><em id="menu-verwaltung-info">Lesezeichen, Antennen, Benutzer, Station</em></span></button>
+        <button type="button" id="abmelden"><span class="ico" aria-hidden="true">⏏</span><span><strong>Abmelden</strong></span></button>
       </div>
-      <div class="sdr-schritt-zeile">
-        <button type="button" class="btn-sm" id="ab" title="Einen Schritt tiefer" aria-label="Frequenz runter">◀</button>
-        <select id="step" class="sdr-schrittwahl" aria-label="Abstimmschritt">
+    </details>
+    <button class="melden-open" type="button" id="melden" hidden aria-haspopup="dialog"
+            aria-label="Fehler, Idee oder Frage melden">
+      <span aria-hidden="true">🐞</span><span class="nur-breit">Melden</span>
+    </button>
+  </div>
+</div></header>
+
+<main id="inhalt">
+<noscript><div class="wrap"><p class="note">Der WebSDR braucht JavaScript.</p></div></noscript>
+
+<div class="wrap weit rm-app">
+  <!-- ------------------------------------------------------- Kopfzeile -->
+  <header class="rm-kopf">
+    <div class="rm-kopf-freq">
+      <div class="rm-vfo-zeile">
+        <span class="rm-vfo-name">RX</span>
+        <div id="freq" class="rm-freq" tabindex="0" role="spinbutton"
+          aria-label="Empfangsfrequenz. Mausrad über einer Ziffer stimmt ab, Enter oder Klick zum Eintippen."></div>
+        <select id="mode" class="rm-modus" aria-label="Betriebsart"></select>
+      </div>
+      <div class="rm-schritt-zeile">
+        <button type="button" class="btn-sm" id="ab" title="Frequenz um einen Schritt runter" aria-label="Frequenz runter">◀</button>
+        <select id="step" class="rm-schrittwahl" aria-label="Abstimmschritt">
           <option value="10">10 Hz</option>
           <option value="100">100 Hz</option>
           <option value="500">500 Hz</option>
@@ -33,76 +67,394 @@
           <option value="9000">9 kHz</option>
           <option value="10000">10 kHz</option>
         </select>
-        <button type="button" class="btn-sm" id="auf" title="Einen Schritt höher" aria-label="Frequenz hoch">▶</button>
+        <button type="button" class="btn-sm" id="auf" title="Frequenz um einen Schritt hoch" aria-label="Frequenz hoch">▶</button>
       </div>
     </div>
-
-    <div class="sdr-kopf-station">
-      <div class="sdr-titel" id="title">R2T2 WebSDR</div>
-      <div class="sdr-geraet" id="station"></div>
-      <div class="sdr-utc mono" id="utc">--:--:-- UTC</div>
-      <div class="sdr-datum" id="datum"></div>
+    <div class="rm-kopf-station">
+      <div class="sdr-stationsname" id="title">R2T2 WebSDR</div>
+      <div class="rm-geraet" id="station">R2T2</div>
+      <div class="rm-utc" id="utc">--:--:--</div>
     </div>
-
-    <div class="sdr-kopf-status">
-      <div class="sdr-status-knoepfe">
-        <span class="sdr-lampe" id="conn">Getrennt</span>
-        <span class="sdr-lampe" id="users" title="Nutzer und Hörer">–</span>
-        <button type="button" class="btn sdr-hoeren" id="audio">▶ Hören</button>
+    <div class="rm-kopf-status">
+      <div class="rm-status-knoepfe">
+        <span id="conn" class="rm-lampe aus" title="Verbindung zum Empfänger">offline</span>
       </div>
-      <div class="sdr-smeter" title="Signalpegel im Filter">
-        <div class="sdr-smeter-spur"><div id="smbar"></div></div>
-        <span id="smval" class="mono">– dBFS</span>
+      <div class="rm-status-knoepfe">
+        <button type="button" class="btn-sm" id="audio">Audio starten</button>
+      </div>
+      <div class="rm-bedienung" aria-live="polite">
+        <span id="users">–</span>
       </div>
     </div>
   </header>
 
-  <!-- ----------------------------------------- Wasserfall mit Bedienfeld -->
-  <div class="sdr-wf-zeile">
-    <div class="sdr-wf" id="wfbox">
-      <canvas id="scale" class="sdr-wf-skala"></canvas>
-      <canvas id="spectrum" class="sdr-spektrum"></canvas>
-      <div class="sdr-wf-flaeche">
-        <canvas id="waterfall" class="sdr-wasserfall"></canvas>
-        <div id="passband" class="sdr-passband" hidden></div>
-        <div id="hover" class="sdr-wf-info"></div>
+  <!-- ------------------------------------------------ Bänder und Skala -->
+  <div class="rm-ribbon">
+    <div class="rm-baender" id="baender"></div>
+    <div id="skala-teil">
+      <div class="rm-ribbon-kopf">
+        <span id="ribbon-name"></span>
+        <span class="mono" id="ribbon-grenzen"></span>
+        <span class="rm-tasten-luft"></span>
+        <span class="rm-skala-plan"><span class="rm-legende"><i class="sdr-legende-wf"></i>Wasserfall</span></span>
       </div>
+      <div class="rm-bandskala" id="skala" title="Klick stimmt ab · Mausrad: Schritt"></div>
     </div>
+  </div>
 
-    <aside class="sdr-wf-panel" aria-label="Bedienung">
+  <!-- ----------------------------------------------------------- Meter -->
+  <section class="rm-meter sdr-meter" aria-label="Messwerte">
+    <div class="rm-meter-s">
+      <div class="rm-meter-kopf"><span>Pegel im Filter</span><span id="smval" class="mono">–</span></div>
+      <div class="rm-balken" id="rm-balken-s"><div id="smbar"></div></div>
+      <div class="rm-skala mono"><span>-130</span><span>-110</span><span>-90</span><span>-70</span><span>-50</span><span>-30</span><span>dBFS</span></div>
+    </div>
+    <div class="rm-meter-werte" id="meter-werte"></div>
+  </section>
+
+  <!-- -------------------------------------------- Wasserfall mit Panel -->
+  <div class="rm-wf-zeile">
+    <div class="rm-wf" id="wfbox">
+      <div class="rm-wf-skala mono" id="wfskala"></div>
+      <canvas id="spectrum" class="rm-spektrum"></canvas>
+      <div class="sdr-wf-flaeche">
+        <canvas id="waterfall" class="rm-wasserfall"></canvas>
+        <div id="passband" class="sdr-passband" hidden></div>
+      </div>
+      <div class="rm-wf-info mono" id="hover" aria-live="off"></div>
+    </div>
+    <aside class="rm-wf-panel" aria-label="Schnellregler">
       <div class="field">
-        <label for="band">Band</label>
-        <select id="band"></select>
+        <label for="vol">Lautstärke hier <span class="einheit" id="vol-wert">70 %</span></label>
+        <div class="feld-zeile rm-laut-zeile">
+          <input type="range" id="vol" min="0" max="100" value="70">
+          <button type="button" class="rm-an" id="stumm" aria-pressed="false" title="Ton aus (Taste M)">Stumm</button>
+        </div>
+      </div>
+      <div class="field">
+        <label for="sql-art">Squelch hier</label>
+        <select id="sql-art">
+          <option value="aus">aus, immer hören</option>
+          <option value="schwelle">ab Pegel</option>
+        </select>
+      </div>
+      <div class="field rm-regler" id="sql-feld" hidden>
+        <label for="sql">Öffnen ab <span class="einheit" id="sqlval">-100 dBFS</span></label>
+        <input type="range" id="sql" min="-140" max="-20" value="-100">
       </div>
       <div class="field">
         <label for="bw">Filter</label>
         <select id="bw"></select>
       </div>
-      <div class="field">
-        <label for="vol">Lautstärke</label>
-        <input type="range" id="vol" min="0" max="100" value="70">
-      </div>
-      <div class="field">
-        <label for="sql">Squelch <span class="einheit" id="sqlval">aus</span></label>
-        <input type="range" id="sql" min="-140" max="-20" value="-140">
-      </div>
-      <div class="field">
-        <label for="wfmin">Wasserfall unten</label>
+      <div class="field rm-regler">
+        <label for="wfmin">Wasserfall ab <span class="einheit" id="wfmin-wert"></span></label>
         <input type="range" id="wfmin" min="0" max="255" value="40">
       </div>
-      <div class="field">
-        <label for="wfmax">Wasserfall oben</label>
+      <div class="field rm-regler">
+        <label for="wfmax">Wasserfall bis <span class="einheit" id="wfmax-wert"></span></label>
         <input type="range" id="wfmax" min="0" max="255" value="120">
       </div>
       <button type="button" class="btn-sm" id="auto">Kontrast automatisch</button>
-      <p class="field-hint">Klick in den Wasserfall stimmt ab. Mausrad und Pfeiltasten ändern um einen Schritt, über einer Ziffer der Frequenz um diese Stelle.</p>
     </aside>
   </div>
 
-  <footer class="sdr-fuss" id="fuss"></footer>
+  <!-- --------------------------------------------------- Lesezeichen, Chat -->
+  <div class="rm-listen">
+    <section class="rm-kasten" aria-labelledby="lz-titel">
+      <div class="rm-kasten-kopf"><span id="lz-titel">Lesezeichen</span>
+        <label class="rm-schalter rm-kopf-schalter"><input type="checkbox" id="lz-nurband" checked> nur dieses Band</label></div>
+      <div class="rm-kasten-inhalt">
+        <div id="lz-box"></div>
+        <button type="button" class="btn-sm" id="lz-neu" hidden>＋ Lesezeichen hier</button>
+      </div>
+    </section>
+    <section class="rm-kasten" aria-labelledby="chat-titel" id="chat-kasten">
+      <div class="rm-kasten-kopf"><span id="chat-titel">Chat</span></div>
+      <div class="rm-kasten-inhalt">
+        <p class="field-hint" id="chat-hinweis">Mit allen, die gerade zuhören. Die letzten 30 Nachrichten sieht, wer dazukommt; gespeichert wird nichts.</p>
+        <div class="rm-chat-liste" id="chat-liste" aria-live="polite"></div>
+        <div class="field" id="chat-name-feld">
+          <label for="chat-name">Dein Name oder Rufzeichen</label>
+          <input id="chat-name" maxlength="24" autocomplete="off">
+        </div>
+        <form class="rm-chat-form" id="chat-form">
+          <input id="chat-text" maxlength="380" autocomplete="off" placeholder="Nachricht …" aria-label="Nachricht">
+          <button type="submit" class="btn-sm">Senden</button>
+        </form>
+      </div>
+    </section>
+  </div>
+</div>
 </main>
 
-<div class="sdr-toasts" id="toasts" role="status" aria-live="polite"></div>
-<script src="app.js?v=20261003b"></script>
+<footer class="footer">
+  <div class="wrap weit footer-grid">
+    <div>
+      <a class="brand" href="./"><img src="icon.svg" alt="" width="22" height="22"> R2T2 WebSDR</a>
+    </div>
+    <div>
+      <p class="muted small"><strong>Station</strong></p>
+      <ul class="footlinks"><li id="fuss-station">–</li></ul>
+    </div>
+    <div>
+      <p class="muted small"><strong>Software</strong></p>
+      <ul class="footlinks">
+        <li>Entwickelt von <strong>DK5DEN</strong></li>
+        <li class="sdr-version"><span id="fuss-version">R2T2 WebSDR</span>
+          <a class="sdr-github" href="https://github.com/DK5DEN/r2t2-websdr" title="Quellcode und Doku auf GitHub" aria-label="Quellcode und Doku auf GitHub">
+            <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true" fill="currentColor"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
+          </a>
+        </li>
+      </ul>
+    </div>
+  </div>
+</footer>
+
+<!-- ------------------------------------------------------------ Anmelden -->
+<dialog class="rf-dialog rm-klein-dialog" id="dlg-login" aria-labelledby="dlg-login-titel">
+  <form method="dialog" id="form-login">
+    <div class="rf-dialog-kopf">
+      <h2 id="dlg-login-titel">Anmelden</h2>
+      <button type="button" class="icon-btn" data-schliessen aria-label="Schließen">✕</button>
+    </div>
+    <p class="note fehler" data-fehler hidden></p>
+    <div class="sdr-felder">
+      <div class="field">
+        <label for="login-user">Name</label>
+        <input id="login-user" autocomplete="username" autocapitalize="off" spellcheck="false" required>
+      </div>
+      <div class="field">
+        <label for="login-pass">Passwort</label>
+        <input id="login-pass" type="password" autocomplete="current-password" required>
+        <span class="field-hint">Dein Passwort verlässt den Browser nicht, zum Gerät geht nur ein einmaliger Nachweis. Die Verbindung selbst ist trotzdem unverschlüsselt (http): nimm kein Passwort, das du anderswo benutzt.</span>
+      </div>
+    </div>
+    <div class="rf-dialog-fuss btn-row">
+      <button type="button" class="btn-sm" data-schliessen>Abbrechen</button>
+      <button type="submit" class="btn">Anmelden</button>
+    </div>
+  </form>
+</dialog>
+
+<!-- ---------------------------------------------------------- Verwaltung -->
+<dialog class="rm-einstellungen" id="dlg-verwaltung" aria-labelledby="dlg-verwaltung-titel">
+  <div class="rm-dialog-kopf">
+    <h2 id="dlg-verwaltung-titel">Verwaltung</h2>
+    <button type="button" class="icon-btn" data-schliessen aria-label="Schließen">✕</button>
+  </div>
+  <p class="note fehler" data-fehler hidden></p>
+  <div class="rm-tabs" role="tablist" id="tabs">
+    <button type="button" class="rm-tab" role="tab" data-tab="lz" data-rolle="lesezeichen">Lesezeichen</button>
+    <button type="button" class="rm-tab" role="tab" data-tab="ant" data-rolle="admin">Antennen</button>
+    <button type="button" class="rm-tab" role="tab" data-tab="nutzer" data-rolle="admin">Benutzer</button>
+    <button type="button" class="rm-tab" role="tab" data-tab="station" data-rolle="admin">Station</button>
+    <button type="button" class="rm-tab" role="tab" data-tab="konto" data-rolle="nutzer">Konto</button>
+  </div>
+
+  <section class="rm-tab-seite" role="tabpanel" data-seite="lz">
+    <p class="field-hint">Lesezeichen sieht jeder Besucher auf der Band-Skala, im Spektrum und im Kasten „Lesezeichen“.</p>
+    <p class="sdr-leer" id="lz-leer">Noch keine Lesezeichen. Leg das erste mit dem Knopf darunter an, es übernimmt die eingestellte Frequenz.</p>
+    <div class="data-wrap" id="lz-wrap">
+      <table class="data">
+        <thead><tr><th>Name</th><th class="num">Frequenz</th><th>Art</th><th></th></tr></thead>
+        <tbody id="lz-liste"></tbody>
+      </table>
+    </div>
+    <p class="btn-row sdr-plus"><button type="button" class="btn-sm" id="lz-plus">＋ Lesezeichen</button></p>
+  </section>
+
+  <section class="rm-tab-seite" role="tabpanel" data-seite="ant">
+    <p class="field-hint">Für jede Frequenz nimmt der Empfänger den ersten Eingang, dessen Bereiche sie abdecken, sonst den Eingang für alle übrigen Frequenzen. Verstärkung und Abschwächer gelten für den ganzen Eingang.</p>
+    <div class="sdr-antennen" id="ant-liste"></div>
+  </section>
+
+  <section class="rm-tab-seite" role="tabpanel" data-seite="nutzer">
+    <div class="data-wrap">
+      <table class="data">
+        <thead><tr><th>Name</th><th>Rolle</th><th>Angemeldet</th><th></th></tr></thead>
+        <tbody id="nutzer-liste"></tbody>
+      </table>
+    </div>
+    <p class="btn-row sdr-plus"><button type="button" class="btn-sm" id="nutzer-plus">＋ Konto</button></p>
+    <p class="field-hint">Admin: alles. Lesezeichen: Lesezeichen pflegen. Nutzer: hören und chatten, wenn das nur nach Anmeldung erlaubt ist.</p>
+  </section>
+
+  <section class="rm-tab-seite" role="tabpanel" data-seite="station">
+    <form class="sdr-felder" id="form-station">
+      <div class="field">
+        <label for="st-title">Titel</label>
+        <input id="st-title" maxlength="90">
+      </div>
+      <div class="field">
+        <label for="st-callsign">Rufzeichen</label>
+        <input id="st-callsign" maxlength="20" autocapitalize="characters">
+      </div>
+      <div class="field">
+        <label for="st-location">Standort</label>
+        <input id="st-location" maxlength="90">
+      </div>
+      <div class="field">
+        <label for="st-locator">Locator</label>
+        <input id="st-locator" maxlength="10" autocapitalize="characters">
+      </div>
+      <div class="field">
+        <label for="st-access">Hören</label>
+        <select id="st-access">
+          <option value="open">Jeder darf hören</option>
+          <option value="login">Nur nach Anmeldung</option>
+        </select>
+        <span class="field-hint">Den Wasserfall sehen immer alle, auch eingebettet in der Fernbedienung.</span>
+      </div>
+      <div class="field">
+        <label for="st-chat">Chat</label>
+        <select id="st-chat">
+          <option value="all">Jeder darf schreiben, Gäste mit Kennzeichnung</option>
+          <option value="login">Nur angemeldete Nutzer</option>
+          <option value="off">Aus</option>
+        </select>
+      </div>
+      <p class="btn-row"><button type="submit" class="btn">Speichern</button></p>
+    </form>
+  </section>
+
+  <section class="rm-tab-seite" role="tabpanel" data-seite="konto">
+    <form class="sdr-felder" id="form-passwort">
+      <p class="field-hint" id="konto-info"></p>
+      <div class="field">
+        <label for="pw-alt">Bisheriges Passwort</label>
+        <input id="pw-alt" type="password" autocomplete="current-password" required>
+      </div>
+      <div class="field">
+        <label for="pw-neu">Neues Passwort</label>
+        <input id="pw-neu" type="password" autocomplete="new-password" minlength="8" required>
+        <span class="field-hint">Mindestens 8 Zeichen. Andere Geräte werden danach abgemeldet.</span>
+      </div>
+      <div class="field">
+        <label for="pw-neu2">Neues Passwort wiederholen</label>
+        <input id="pw-neu2" type="password" autocomplete="new-password" minlength="8" required>
+      </div>
+      <p class="btn-row"><button type="submit" class="btn">Passwort ändern</button></p>
+    </form>
+  </section>
+</dialog>
+
+<!-- ------------------------------------------------- Lesezeichen bearbeiten -->
+<dialog class="rf-dialog rm-klein-dialog" id="dlg-lz" aria-labelledby="dlg-lz-titel">
+  <form method="dialog" id="form-lz">
+    <div class="rf-dialog-kopf">
+      <h2 id="dlg-lz-titel">Lesezeichen</h2>
+      <button type="button" class="icon-btn" data-schliessen aria-label="Schließen">✕</button>
+    </div>
+    <p class="note fehler" data-fehler hidden></p>
+    <div class="sdr-felder">
+      <div class="field">
+        <label for="lz-name">Name</label>
+        <input id="lz-name" maxlength="60" required>
+      </div>
+      <div class="field">
+        <label for="lz-freq">Frequenz <span class="einheit">kHz</span></label>
+        <input id="lz-freq" inputmode="decimal" required>
+      </div>
+      <div class="field">
+        <label for="lz-mode">Betriebsart</label>
+        <select id="lz-mode"></select>
+      </div>
+    </div>
+    <div class="rf-dialog-fuss btn-row">
+      <button type="button" class="btn-sm" data-schliessen>Abbrechen</button>
+      <button type="submit" class="btn">Speichern</button>
+    </div>
+  </form>
+</dialog>
+
+<!-- ------------------------------------------------------ Konto bearbeiten -->
+<dialog class="rf-dialog rm-klein-dialog" id="dlg-nutzer" aria-labelledby="dlg-nutzer-titel">
+  <form method="dialog" id="form-nutzer">
+    <div class="rf-dialog-kopf">
+      <h2 id="dlg-nutzer-titel">Konto</h2>
+      <button type="button" class="icon-btn" data-schliessen aria-label="Schließen">✕</button>
+    </div>
+    <p class="note fehler" data-fehler hidden></p>
+    <div class="sdr-felder">
+      <div class="field">
+        <label for="nu-name">Name</label>
+        <input id="nu-name" maxlength="24" autocapitalize="off" spellcheck="false" required>
+        <span class="field-hint">2 bis 24 Zeichen: Buchstaben, Ziffern, Punkt, Minus, Unterstrich. Ein Rufzeichen passt.</span>
+      </div>
+      <div class="field">
+        <label for="nu-role">Rolle</label>
+        <select id="nu-role">
+          <option value="nutzer">Nutzer: hören und chatten</option>
+          <option value="lesezeichen">Lesezeichen: dazu Lesezeichen pflegen</option>
+          <option value="admin">Admin: alles</option>
+        </select>
+      </div>
+      <div class="field">
+        <label for="nu-pass">Passwort</label>
+        <input id="nu-pass" type="password" autocomplete="new-password" minlength="8">
+        <span class="field-hint" id="nu-pass-hint">Mindestens 8 Zeichen.</span>
+      </div>
+    </div>
+    <div class="rf-dialog-fuss btn-row">
+      <button type="button" class="btn-sm" data-schliessen>Abbrechen</button>
+      <button type="submit" class="btn">Speichern</button>
+    </div>
+  </form>
+</dialog>
+
+<!-- ------------------------------------------------------------- Rückfrage -->
+<dialog class="rf-dialog rm-klein-dialog" id="dlg-frage" aria-labelledby="dlg-frage-titel">
+  <div class="rf-dialog-kopf">
+    <h2 id="dlg-frage-titel">Löschen?</h2>
+    <button type="button" class="icon-btn" data-schliessen aria-label="Schließen">✕</button>
+  </div>
+  <p id="dlg-frage-text"></p>
+  <div class="rf-dialog-fuss btn-row">
+    <button type="button" class="btn-sm" data-schliessen>Abbrechen</button>
+    <button type="button" class="btn-sm btn-weg mit-wort" id="dlg-frage-ja"></button>
+  </div>
+</dialog>
+
+<!-- --------------------------------------------------------------- Melden -->
+<dialog class="rf-dialog rm-klein-dialog" id="dlg-melden" aria-labelledby="dlg-melden-titel">
+  <form method="dialog" id="form-melden">
+    <div class="rf-dialog-kopf">
+      <h2 id="dlg-melden-titel">Melden</h2>
+      <button type="button" class="icon-btn" data-schliessen aria-label="Schließen">✕</button>
+    </div>
+    <p class="note fehler" data-fehler hidden></p>
+    <div class="sdr-felder">
+      <div class="field">
+        <label for="melden-art">Worum geht es?</label>
+        <select id="melden-art">
+          <option value="bug">Etwas funktioniert nicht</option>
+          <option value="feature">Ich habe einen Wunsch</option>
+          <option value="question">Ich habe eine Frage</option>
+        </select>
+      </div>
+      <div class="field">
+        <label for="melden-titel">Kurz in einer Zeile</label>
+        <input id="melden-titel" maxlength="120" required autocomplete="off">
+      </div>
+      <div class="field">
+        <label for="melden-text">Beschreibung</label>
+        <textarea id="melden-text" rows="5" maxlength="8000" required></textarea>
+      </div>
+      <div class="field">
+        <label for="melden-ruf">Dein Rufzeichen oder eine Mailadresse</label>
+        <input id="melden-ruf" maxlength="60" autocomplete="off">
+        <span class="field-hint">Geht an afu.tools, damit wir nachfragen können.</span>
+      </div>
+    </div>
+    <div class="rf-dialog-fuss btn-row">
+      <button type="button" class="btn-sm" data-schliessen>Abbrechen</button>
+      <button type="submit" class="btn">Absenden</button>
+    </div>
+  </form>
+</dialog>
+
+<div class="rm-toasts" id="toasts" role="status" aria-live="polite"></div>
+<script src="kdf.js?v=20261003j"></script>
+<script src="app.js?v=20261003j"></script>
 </body>
 </html>
