@@ -1,0 +1,15 @@
+[Unit]
+Description=R2T2 WebSDR
+After=r2t2.service network.target
+Wants=r2t2.service
+Conflicts=radiowatch.service
+
+[Service]
+ExecStartPre=-/usr/bin/killall -q r2t2srv r2t2client
+ExecStart=/opt/r2t2sdr/r2t2sdr -c /etc/r2t2sdr.conf
+Restart=always
+RestartSec=3
+Nice=-5
+
+[Install]
+WantedBy=multi-user.target

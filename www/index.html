@@ -1,0 +1,108 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>R2T2 WebSDR</title>
+<meta name="color-scheme" content="dark light">
+<link rel="icon" href="icon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="style.css?v=20261003b">
+</head>
+<body>
+<a class="skip" href="#inhalt">Zum Inhalt</a>
+
+<main id="inhalt" class="wrap sdr-app">
+  <noscript><p class="note">Der WebSDR braucht JavaScript.</p></noscript>
+
+  <!-- ------------------------------------------------------- Kopfzeile -->
+  <header class="sdr-kopf">
+    <div class="sdr-kopf-freq">
+      <div class="sdr-vfo-zeile">
+        <div id="freq" class="sdr-freq" tabindex="0" role="spinbutton"
+          aria-label="Empfangsfrequenz. Mausrad über einer Ziffer stimmt ab, Enter oder Klick zum Eintippen."></div>
+        <select id="mode" class="sdr-modus" aria-label="Betriebsart"></select>
+      </div>
+      <div class="sdr-schritt-zeile">
+        <button type="button" class="btn-sm" id="ab" title="Einen Schritt tiefer" aria-label="Frequenz runter">◀</button>
+        <select id="step" class="sdr-schrittwahl" aria-label="Abstimmschritt">
+          <option value="10">10 Hz</option>
+          <option value="100">100 Hz</option>
+          <option value="500">500 Hz</option>
+          <option value="1000">1 kHz</option>
+          <option value="5000">5 kHz</option>
+          <option value="9000">9 kHz</option>
+          <option value="10000">10 kHz</option>
+        </select>
+        <button type="button" class="btn-sm" id="auf" title="Einen Schritt höher" aria-label="Frequenz hoch">▶</button>
+      </div>
+    </div>
+
+    <div class="sdr-kopf-station">
+      <div class="sdr-titel" id="title">R2T2 WebSDR</div>
+      <div class="sdr-geraet" id="station"></div>
+      <div class="sdr-utc mono" id="utc">--:--:-- UTC</div>
+      <div class="sdr-datum" id="datum"></div>
+    </div>
+
+    <div class="sdr-kopf-status">
+      <div class="sdr-status-knoepfe">
+        <span class="sdr-lampe" id="conn">Getrennt</span>
+        <span class="sdr-lampe" id="users" title="Nutzer und Hörer">–</span>
+        <button type="button" class="btn sdr-hoeren" id="audio">▶ Hören</button>
+      </div>
+      <div class="sdr-smeter" title="Signalpegel im Filter">
+        <div class="sdr-smeter-spur"><div id="smbar"></div></div>
+        <span id="smval" class="mono">– dBFS</span>
+      </div>
+    </div>
+  </header>
+
+  <!-- ----------------------------------------- Wasserfall mit Bedienfeld -->
+  <div class="sdr-wf-zeile">
+    <div class="sdr-wf" id="wfbox">
+      <canvas id="scale" class="sdr-wf-skala"></canvas>
+      <canvas id="spectrum" class="sdr-spektrum"></canvas>
+      <div class="sdr-wf-flaeche">
+        <canvas id="waterfall" class="sdr-wasserfall"></canvas>
+        <div id="passband" class="sdr-passband" hidden></div>
+        <div id="hover" class="sdr-wf-info"></div>
+      </div>
+    </div>
+
+    <aside class="sdr-wf-panel" aria-label="Bedienung">
+      <div class="field">
+        <label for="band">Band</label>
+        <select id="band"></select>
+      </div>
+      <div class="field">
+        <label for="bw">Filter</label>
+        <select id="bw"></select>
+      </div>
+      <div class="field">
+        <label for="vol">Lautstärke</label>
+        <input type="range" id="vol" min="0" max="100" value="70">
+      </div>
+      <div class="field">
+        <label for="sql">Squelch <span class="einheit" id="sqlval">aus</span></label>
+        <input type="range" id="sql" min="-140" max="-20" value="-140">
+      </div>
+      <div class="field">
+        <label for="wfmin">Wasserfall unten</label>
+        <input type="range" id="wfmin" min="0" max="255" value="40">
+      </div>
+      <div class="field">
+        <label for="wfmax">Wasserfall oben</label>
+        <input type="range" id="wfmax" min="0" max="255" value="120">
+      </div>
+      <button type="button" class="btn-sm" id="auto">Kontrast automatisch</button>
+      <p class="field-hint">Klick in den Wasserfall stimmt ab. Mausrad und Pfeiltasten ändern um einen Schritt, über einer Ziffer der Frequenz um diese Stelle.</p>
+    </aside>
+  </div>
+
+  <footer class="sdr-fuss" id="fuss"></footer>
+</main>
+
+<div class="sdr-toasts" id="toasts" role="status" aria-live="polite"></div>
+<script src="app.js?v=20261003b"></script>
+</body>
+</html>
