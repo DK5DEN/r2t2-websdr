@@ -98,7 +98,9 @@ the config file:
 
 Opened directly, the page looks like the remote station of afu.tools: `afu-style.css` and
 `remote.css` are unchanged copies of the afu.tools style sheets, the markup uses the same
-classes (`rm-…`). Own additions are in `sdr.css`. Parts of the remote station that make no sense
+classes (`rm-…`). Own additions are in `sdr.css`. Tables follow the afu.tools design guide with
+`afu-tabelle.js` (copy of `js/tabelle.js`): sortable heads, filter fields that move into the head
+on wide screens, count line, footer with paging (10 per page unless the reader chose more). Parts of the remote station that make no sense
 for a receiver (transmitting, VFO B, RIT, memories, log book, TX meters) are left out.
 
 - header with frequency (mouse wheel over a digit tunes that digit), mode, step, station and
@@ -140,6 +142,18 @@ logins lock the address for 60 s. Sessions last 90 days and survive a restart.
 
 Without TLS a listener on the network can still see the session token and try to guess weak
 passwords offline from a recorded login. Use passwords that are not used elsewhere.
+
+## Bookmark import and export
+
+Under Verwaltung > Lesezeichen, in the format of OpenWebRX (`bookmarks.json`: a list of
+`{name, frequency, modulation}`). The export writes FM as `nfm`. The import also reads this
+program's own format, shows a preview and either adds (same frequency and name are skipped) or
+replaces the list. OpenWebRX modulations are mapped onto the five modes here: digital modes
+carried by SSB (FT8, WSPR, JS8, RTTY, HFDL, NAVTEX, fax …) become USB, DMR/YSF/D-Star/NXDN/M17,
+packet and POCSAG become FM, DRM and SAM become AM, unknown ones USB. Up to 1000 bookmarks.
+
+OpenWebRX+ hands out its bookmarks only per profile over its WebSocket; a script that selects
+the profiles one after another and collects the `bookmarks` messages produces such a file.
 
 ## Antennas
 

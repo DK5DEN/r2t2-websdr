@@ -30,6 +30,37 @@ static int cmp(const void *a, const void *b)
     return d < 0 ? -1 : d > 0;
 }
 
+static int save(void);
+
+int bm_save(void)
+{
+    qsort(bms, nbms, sizeof(bms[0]), cmp);
+    return save();
+}
+
+void bm_clear(void)
+{
+    nbms = 0;
+}
+
+int bm_add(double freq, const char *mode, const char *name)
+{
+    char nm[sizeof(bms[0].name)];
+    clean(nm, sizeof(nm), name);
+    for (int i = 0; i < nbms; i++)
+        if (bms[i].freq > freq - 1 && bms[i].freq < freq + 1 && !strcmp(bms[i].name, nm))
+            return 0;
+    if (nbms >= MAX_BOOKMARKS)
+        return -1;
+    bookmark_t *b = &bms[nbms++];
+    memset(b, 0, sizeof(*b));
+    b->id = next_id++;
+    b->freq = freq;
+    snprintf(b->mode, sizeof(b->mode), "%s", mode);
+    snprintf(b->name, sizeof(b->name), "%s", nm);
+    return 1;
+}
+
 static int save(void)
 {
     char tmp[320];

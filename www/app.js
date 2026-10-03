@@ -12,6 +12,23 @@
  *    reported to the parent page with postMessage.
  * All URLs are relative, so the page also works behind the afu-remote tunnel.
  */
+/* el() as in afu.tools app.js; afu-tabelle.js needs it as a global */
+function el(tag, attrs = {}, ...children) {
+  const node = document.createElement(tag);
+  for (const [key, value] of Object.entries(attrs)) {
+    if (value === null || value === undefined || value === false) continue;
+    if (key === 'class') node.className = value;
+    else if (key === 'html') node.innerHTML = value;
+    else if (key.startsWith('on') && typeof value === 'function') node.addEventListener(key.slice(2), value);
+    else node.setAttribute(key, value);
+  }
+  for (const child of children.flat()) {
+    if (child === null || child === undefined || child === false) continue;
+    node.append(child.nodeType ? child : document.createTextNode(String(child)));
+  }
+  return node;
+}
+
 (() => {
   const $ = (id) => document.getElementById(id);
   const params = new URLSearchParams(location.search);
@@ -811,7 +828,6 @@
       $('menu-verwaltung-info').textContent = can('admin') ? 'Lesezeichen, Antennen, Benutzer, Station, Passwort'
         : can('lesezeichen') ? 'Lesezeichen, Passwort' : 'Passwort ändern';
     }
-    $('lz-neu').hidden = !can('lesezeichen');
     document.querySelectorAll('#tabs .rm-tab').forEach((t) => { t.hidden = !can(t.dataset.rolle); });
     if (!logged && $('dlg-verwaltung').open) $('dlg-verwaltung').close();
     renderBookmarkBox();
@@ -863,58 +879,141 @@
     if (!EMBED) drawRibbon();
   }
 
-  // box on the page: as lesezeichenZeigen() on /remote
-  function renderBookmarkBox() {
-    if (EMBED) return;
-    const box = $('lz-box');
-    const onlyBand = $('lz-nurband').checked;
-    const band = bandEdges(st.freq);
-    const list = st.bookmarks.filter((x) => !onlyBand || !band || (x.freq >= band.lo && x.freq <= band.hi));
-    if (!list.length) {
-      box.innerHTML = `<p class="field-hint">${st.bookmarks.length ? 'Auf diesem Band gibt es noch keine Lesezeichen.'
-        : can('lesezeichen') ? 'Noch keine Lesezeichen. Mit „＋ Lesezeichen hier“ merkst du dir die aktuelle Frequenz.'
-          : 'Noch keine Lesezeichen.'}</p>`;
-      return;
+  /*
+   * Data tables after the afu.tools design guide, built on afu-tabelle.js:
+   * sortable heads, filter fields that move into the head on wide screens,
+   * count line, footer with paging (10 per page unless the reader chose more).
+   */
+  function dataTable({ table, footer, key, start, value, filters, match, row, empty, columns, count }) {
+    const tbody = table.tBodies[0];
+    const pager = seitenFuss(footer, { schluessel: key, beiWechsel: () => draw(), obenAnkern: table });
+    const sorting = sortKopf(table, () => draw(), start);
+    filterKopf(table, filters);
+    let rows = [];
+    function draw() {
+      const shown = rows.filter(match);
+      const part = pager.ausschnitt(sortiereZeilen(shown, sorting.feld(), sorting.richtung(), value));
+      tbody.replaceChildren(...(shown.length ? part.map(row)
+        : [el('tr', {}, el('td', { colspan: String(columns), class: 'empty' }, empty))]));
+      if (count) count(shown.length, rows.length);
     }
-    const rows = list.map((b) => `<tr data-id="${b.id}"><td class="mono num">${(b.freq / 1e6).toFixed(4)}</td>`
-      + `<td>${esc(b.mode.toUpperCase())}</td><td>${esc(b.name)}</td>`
-      + '<td><div class="rm-knopfreihe"><button type="button" class="btn-sm" data-hin>Abstimmen</button>'
-      + (can('lesezeichen') ? `<button type="button" class="btn-sm btn-stift" title="Bearbeiten" aria-label="Bearbeiten">${ICON_STIFT}</button>`
-        + `<button type="button" class="btn-sm btn-weg" title="Lesezeichen löschen" aria-label="Lesezeichen löschen">${ICON_PAPIERKORB}</button>` : '')
-      + '</div></td></tr>').join('');
-    box.innerHTML = '<div class="data-wrap"><table class="data rm-klein-tabelle"><thead><tr>'
-      + '<th class="num">MHz</th><th>Art</th><th>Name</th><th></th></tr></thead>'
-      + `<tbody>${rows}</tbody></table></div>`;
-    box.querySelectorAll('tr[data-id]').forEach((tr) => {
-      const b = st.bookmarks.find((x) => String(x.id) === tr.dataset.id);
-      tr.querySelector('[data-hin]').addEventListener('click', () => gotoBookmark(b));
-      const pen = tr.querySelector('.btn-stift');
-      if (pen) pen.addEventListener('click', () => bookmarkDialog(b));
-      const del = tr.querySelector('.btn-weg');
-      if (del) del.addEventListener('click', () => ask('Lesezeichen löschen?', `„${b.name}“ verschwindet für alle Besucher.`,
-        'Löschen', () => send({ cmd: 'bm_del', id: b.id })));
+    for (const f of Object.values(filters)) {
+      f.addEventListener(f.tagName === 'SELECT' ? 'change' : 'input', () => { pager.zuruecksetzen(); draw(); });
+    }
+    return { set(list) { rows = list; draw(); }, draw };
+  }
+
+  function bookmarkActions(b, withTune) {
+    const box = el('div', { class: 'rm-knopfreihe' });
+    if (withTune) box.append(el('button', { type: 'button', class: 'btn-sm', onclick: () => gotoBookmark(b) }, 'Abstimmen'));
+    if (can('lesezeichen')) {
+      box.append(
+        el('button', { type: 'button', class: 'btn-sm btn-stift', title: 'Bearbeiten', 'aria-label': `${b.name} bearbeiten`,
+          html: ICON_STIFT, onclick: () => bookmarkDialog(b) }),
+        el('button', { type: 'button', class: 'btn-sm btn-weg', title: 'Löschen', 'aria-label': `${b.name} löschen`,
+          html: ICON_PAPIERKORB, onclick: () => ask('Lesezeichen löschen?', `„${b.name}“ verschwindet für alle Besucher.`,
+            'Löschen', () => send({ cmd: 'bm_del', id: b.id })) }));
+    }
+    return box;
+  }
+
+  const bookmarkValue = (b, field) => (field === 'freq' ? b.freq : field === 'mode' ? b.mode.toUpperCase() : b.name);
+  const textMatch = (q, s) => !q || s.toLowerCase().includes(q.toLowerCase());
+  // "7074" or "7.07" finds by the start of the kHz or MHz figure, "7000-7200" is a range
+  // (numbers below 100 are MHz, the others kHz)
+  function freqMatch(q, hz) {
+    q = q.trim().replace(/,/g, '.');
+    if (!q) return true;
+    const toHz = (v) => { const n = parseFloat(v); return !isFinite(n) ? NaN : n < 100 ? n * 1e6 : n * 1e3; };
+    const range = q.split(/\s*[-–]\s*/);
+    if (range.length === 2 && range[0] && range[1]) {
+      const a = toHz(range[0]), b = toHz(range[1]);
+      if (isFinite(a) && isFinite(b)) return hz >= Math.min(a, b) && hz <= Math.max(a, b);
+    }
+    const khz = (hz / 1000).toFixed(2), mhz = (hz / 1e6).toFixed(4);
+    return khz.startsWith(q) || mhz.startsWith(q);
+  }
+  let boxTable = null, adminTable = null, userTable = null;
+
+  function setupTables() {
+    for (const sel of document.querySelectorAll('.sdr-art-wahl')) {
+      for (const [k, m] of Object.entries(MODES)) sel.append(el('option', { value: k }, m.label));
+    }
+    // box on the page (as lesezeichenZeigen() on /remote, with search, filter and paging)
+    boxTable = dataTable({
+      table: $('lz-box-tabelle'), footer: $('lz-box-fuss'), key: 'r2t2:lesezeichen:proseite',
+      start: { feld: 'freq', richtung: 'ascending' }, value: bookmarkValue, columns: 4,
+      filters: { bf: $('bf'), bq: $('bq'), bart: $('bart') },
+      match: (b) => {
+        const band = $('lz-nurband').checked ? bandEdges(st.freq) : null;
+        return (!band || (b.freq >= band.lo && b.freq <= band.hi))
+          && freqMatch($('bf').value, b.freq)
+          && textMatch($('bq').value.trim(), b.name) && (!$('bart').value || b.mode === $('bart').value);
+      },
+      row: (b) => el('tr', {},
+        el('td', { class: 'mono num' }, (b.freq / 1e6).toFixed(4)),
+        el('td', {}, b.mode.toUpperCase()),
+        el('td', {}, b.name),
+        el('td', {}, bookmarkActions(b, true))),
+      empty: 'Kein Lesezeichen passt zu diesem Filter.',
+      count: (shown, all) => {
+        const band = $('lz-nurband').checked ? bandEdges(st.freq) : null;
+        $('lz-box-zahl').textContent = shown === all ? `${all} Lesezeichen`
+          : `${shown} von ${all} Lesezeichen${band ? `, nur ${band.name}` : ''}`;
+      },
     });
+    // administration
+    adminTable = dataTable({
+      table: $('lz-tabelle'), footer: $('lz-fuss'), key: 'r2t2:verwaltung-lz:proseite',
+      start: { feld: 'freq', richtung: 'ascending' }, value: bookmarkValue, columns: 4,
+      filters: { lzq: $('lzq'), lzf: $('lzf'), lzart: $('lzart') },
+      match: (b) => textMatch($('lzq').value.trim(), b.name) && freqMatch($('lzf').value, b.freq)
+        && (!$('lzart').value || b.mode === $('lzart').value),
+      row: (b) => el('tr', {},
+        el('td', {}, b.name),
+        el('td', { class: 'num mono' }, `${(b.freq / 1000).toFixed(2)} kHz`),
+        el('td', {}, b.mode.toUpperCase()),
+        el('td', {}, bookmarkActions(b, false))),
+      empty: 'Kein Lesezeichen passt zu diesem Filter.',
+      count: (shown, all) => {
+        $('lz-zahl').textContent = shown === all ? `${all} Lesezeichen` : `${shown} von ${all} Lesezeichen`;
+        // the export always takes the whole list (design guide: say so when a filter hides some)
+        $('lz-export-hinweis').hidden = shown === all;
+        $('lz-export-hinweis').textContent = `Exportieren nimmt alle ${all} Lesezeichen, auch die ${all - shown} gerade ausgefilterten.`;
+      },
+    });
+    userTable = dataTable({
+      table: $('nutzer-tabelle'), footer: $('nutzer-fuss'), key: 'r2t2:verwaltung-nutzer:proseite',
+      start: { feld: 'name', richtung: 'ascending' }, columns: 4,
+      value: (u, field) => (field === 'role' ? ROLE_LABEL[u.role] : field === 'online' ? (u.online ? 'ja' : 'nein') : u.name),
+      filters: { nuq: $('nuq'), nurolle: $('nurolle') },
+      match: (u) => textMatch($('nuq').value.trim(), u.name) && (!$('nurolle').value || u.role === $('nurolle').value),
+      row: userRow,
+      empty: 'Kein Konto passt zu diesem Filter.',
+      count: (shown, all) => { $('nutzer-zahl').textContent = shown === all ? `${all} Konten` : `${shown} von ${all} Konten`; },
+    });
+  }
+
+  // box on the page
+  function renderBookmarkBox() {
+    if (EMBED || !boxTable) return;
+    const has = st.bookmarks.length > 0;
+    $('lz-neu').hidden = !can('lesezeichen');
+    $('lz-box-teil').hidden = !has;
+    $('lz-box-leer').hidden = has;
+    $('lz-box-leer').textContent = can('lesezeichen')
+      ? 'Noch keine Lesezeichen. Mit ＋ oben rechts merkst du dir die eingestellte Frequenz.'
+      : 'Noch keine Lesezeichen.';
+    boxTable.set(st.bookmarks);
   }
 
   // table in the administration dialog
   function renderBookmarkTable() {
-    if (EMBED) return;
-    const body = $('lz-liste');
-    body.innerHTML = '';
-    $('lz-leer').hidden = st.bookmarks.length > 0;
-    for (const b of st.bookmarks) {
-      const tr = document.createElement('tr');
-      tr.innerHTML = `<td>${esc(b.name)}</td><td class="num mono">${(b.freq / 1000).toFixed(2)} kHz</td>`
-        + `<td>${esc(b.mode.toUpperCase())}</td><td><div class="rm-knopfreihe">`
-        + `<button type="button" class="btn-sm btn-stift" title="Bearbeiten" aria-label="${esc(b.name)} bearbeiten">${ICON_STIFT}</button>`
-        + `<button type="button" class="btn-sm btn-weg" title="Löschen" aria-label="${esc(b.name)} löschen">${ICON_PAPIERKORB}</button>`
-        + '</div></td>';
-      tr.querySelector('.btn-stift').addEventListener('click', () => bookmarkDialog(b));
-      tr.querySelector('.btn-weg').addEventListener('click', () =>
-        ask('Lesezeichen löschen?', `„${b.name}“ verschwindet für alle Besucher.`, 'Löschen',
-          () => send({ cmd: 'bm_del', id: b.id })));
-      body.appendChild(tr);
-    }
+    if (EMBED || !adminTable) return;
+    const has = st.bookmarks.length > 0;
+    $('lz-leer').hidden = has;
+    $('lz-teil').hidden = !has;
+    adminTable.set(st.bookmarks);
   }
 
   let bmEdit = null;
@@ -944,6 +1043,115 @@
     send({ cmd: 'bm_set', id: bmEdit ? bmEdit.id : 0, name: $('lz-name').value.trim(),
       freq: Math.round(khz * 1000), mode: $('lz-mode').value });
     $('dlg-lz').close();
+  }
+
+  // ---- import and export, OpenWebRX bookmarks.json: [{name, frequency, modulation}]
+
+  // OpenWebRX modulations onto the five modes here (digital modes onto what carries them)
+  const OWRX_MODE = {
+    usb: 'usb', lsb: 'lsb', cw: 'cw', am: 'am', sam: 'am', nfm: 'fm', wfm: 'fm', fm: 'fm',
+    drm: 'am', freedv: 'usb', rtty: 'usb', bpsk31: 'usb', bpsk63: 'usb', ft8: 'usb', ft4: 'usb',
+    wspr: 'usb', jt65: 'usb', jt9: 'usb', js8: 'usb', fst4: 'usb', fst4w: 'usb', q65: 'usb',
+    msk144: 'usb', sstv: 'usb', fax: 'usb', cwskimmer: 'cw', rttyskimmer: 'usb',
+    dmr: 'fm', ysf: 'fm', dstar: 'fm', nxdn: 'fm', m17: 'fm', packet: 'fm', pocsag: 'fm',
+    page: 'fm', ais: 'fm', adsb: 'fm', hfdl: 'usb', vdl2: 'am', acars: 'am',
+    sitorb: 'usb', navtex: 'usb', dsc: 'usb', rtty170: 'usb', rtty450: 'usb', rtty85: 'usb',
+    cwdecoder: 'cw', bpsk: 'usb', ism: 'fm', dab: 'fm', usbd: 'usb', lsbd: 'lsb',
+  };
+  const IMPORT_PART = 30;     // entries per message ...
+  const IMPORT_BYTES = 3200;  // ... and bytes, a message may be 4 kB
+
+  function exportBookmarks() {
+    const list = st.bookmarks.map((b) => ({ name: b.name, frequency: Math.round(b.freq),
+      modulation: b.mode === 'fm' ? 'nfm' : b.mode }));
+    const blob = new Blob([JSON.stringify(list, null, 2)], { type: 'application/json' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = 'r2t2-lesezeichen.json';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+  }
+
+  // accepts OpenWebRX ({name, frequency, modulation}) and this program's own format ({name, freq, mode})
+  function parseBookmarks(text) {
+    let data = JSON.parse(text);
+    if (data && !Array.isArray(data)) data = data.bookmarks || data.list || [];
+    if (!Array.isArray(data)) throw new Error('keine Liste');
+    const items = [], unknown = new Set();
+    let invalid = 0;
+    for (const x of data) {
+      const f = Number(x && (x.frequency ?? x.freq));
+      const name = String((x && x.name) || '').trim();
+      const raw = String((x && (x.modulation ?? x.mode)) || 'usb').toLowerCase();
+      if (!isFinite(f) || f <= 0 || !name) { invalid++; continue; }
+      let mode = OWRX_MODE[raw];
+      if (!mode) { unknown.add(raw); mode = 'usb'; }
+      items.push([Math.round(f), mode, name.slice(0, 60)]);
+    }
+    return { items, invalid, unknown: [...unknown] };
+  }
+
+  let importData = null, importSum = null;
+  function importFile(file) {
+    const reader = new FileReader();
+    reader.onload = () => {
+      try {
+        importData = parseBookmarks(reader.result);
+      } catch (e) {
+        toast(`„${file.name}“ ist keine Lesezeichen-Datei (JSON wie bei OpenWebRX erwartet).`, 'fehler');
+        return;
+      }
+      const d = importData;
+      const tooHigh = d.items.filter((it) => it[0] > maxFreq()).length;
+      let info = `${file.name}: ${d.items.length} Lesezeichen gefunden.`;
+      if (tooHigh) info += ` ${tooHigh} liegen über ${(maxFreq() / 1e6).toFixed(0)} MHz und werden übersprungen.`;
+      if (d.invalid) info += ` ${d.invalid} ohne Name oder Frequenz werden übersprungen.`;
+      if (d.unknown.length) info += ` Unbekannte Betriebsarten (${d.unknown.join(', ')}) werden USB.`;
+      $('import-info').textContent = info;
+      openDialog('dlg-import');
+    };
+    reader.readAsText(file);
+  }
+
+  function runImport(ev) {
+    ev.preventDefault();
+    if (!importData || !importData.items.length) { showError('Die Datei enthält keine Lesezeichen.'); return; }
+    const replace = document.querySelector('input[name="import-art"]:checked').value === 'replace';
+    const items = importData.items.filter((it) => it[0] <= maxFreq());
+    importSum = { added: 0, duplicates: 0, full: 0, invalid: importData.invalid + (importData.items.length - items.length) };
+    // parts by size in bytes (UTF-8), the server takes messages up to 4 kB
+    const enc = new TextEncoder(), parts = [[]];
+    let size = 0;
+    for (const it of items) {
+      const n = enc.encode(JSON.stringify(it)).length + 1;
+      if (parts[parts.length - 1].length && (size + n > IMPORT_BYTES || parts[parts.length - 1].length >= IMPORT_PART)) {
+        parts.push([]);
+        size = 0;
+      }
+      parts[parts.length - 1].push(it);
+      size += n;
+    }
+    parts.forEach((part, i) => send({ cmd: 'bm_import', replace: replace && i === 0 ? 1 : 0,
+      done: i === parts.length - 1 ? 1 : 0, items: part }));
+    $('dlg-import').close();
+  }
+
+  function onImportResult(m) {
+    if (!importSum) return;
+    importSum.added += m.added;
+    importSum.duplicates += m.duplicates;
+    importSum.full += m.full;
+    importSum.invalid += m.invalid;
+    if (!m.done) return;
+    const s = importSum;
+    importSum = null;
+    let text = `${s.added} Lesezeichen importiert.`;
+    if (s.duplicates) text += ` ${s.duplicates} waren schon da.`;
+    if (s.full) text += ` ${s.full} passten nicht mehr (höchstens 1000).`;
+    if (s.invalid) text += ` ${s.invalid} übersprungen.`;
+    toast(text, s.full ? 'warnung' : 'gut');
   }
 
   // ---- administration dialog
@@ -980,25 +1188,25 @@
     if (activeTab === 'lz') renderBookmarkTable();
   }
 
-  function onUsers(list) {
-    const body = $('nutzer-liste');
-    body.innerHTML = '';
-    for (const u of list) {
-      const tr = document.createElement('tr');
-      const self = st.user && u.name.toLowerCase() === st.user.toLowerCase();
-      tr.innerHTML = `<td>${esc(u.name)}${self ? ' <span class="muted">(du)</span>' : ''}</td>`
-        + `<td>${esc(ROLE_LABEL[u.role] || u.role)}</td><td>${u.online ? 'ja' : 'nein'}</td>`
-        + '<td><div class="rm-knopfreihe">'
-        + `<button type="button" class="btn-sm btn-stift" title="Bearbeiten" aria-label="${esc(u.name)} bearbeiten">${ICON_STIFT}</button>`
-        + (self ? '' : `<button type="button" class="btn-sm btn-weg" title="Löschen" aria-label="${esc(u.name)} löschen">${ICON_PAPIERKORB}</button>`)
-        + '</div></td>';
-      tr.querySelector('.btn-stift').addEventListener('click', () => userDialog(u));
-      const del = tr.querySelector('.btn-weg');
-      if (del) del.addEventListener('click', () =>
-        ask('Konto löschen?', `„${u.name}“ wird gelöscht und sofort überall abgemeldet.`, 'Konto löschen',
-          () => send({ cmd: 'user_del', name: u.name })));
-      body.appendChild(tr);
+  function userRow(u) {
+    const self = st.user && u.name.toLowerCase() === st.user.toLowerCase();
+    const actions = el('div', { class: 'rm-knopfreihe' },
+      el('button', { type: 'button', class: 'btn-sm btn-stift', title: 'Bearbeiten', 'aria-label': `${u.name} bearbeiten`,
+        html: ICON_STIFT, onclick: () => userDialog(u) }));
+    if (!self) {
+      actions.append(el('button', { type: 'button', class: 'btn-sm btn-weg', title: 'Löschen', 'aria-label': `${u.name} löschen`,
+        html: ICON_PAPIERKORB, onclick: () => ask('Konto löschen?', `„${u.name}“ wird gelöscht und sofort überall abgemeldet.`,
+          'Konto löschen', () => send({ cmd: 'user_del', name: u.name })) }));
     }
+    return el('tr', {},
+      el('td', {}, u.name, self ? el('span', { class: 'muted' }, ' (du)') : null),
+      el('td', {}, ROLE_LABEL[u.role] || u.role),
+      el('td', {}, u.online ? 'ja' : 'nein'),
+      el('td', {}, actions));
+  }
+
+  function onUsers(list) {
+    if (userTable) userTable.set(list);
   }
 
   let userEdit = null;
@@ -1066,6 +1274,11 @@
       toast('Passwort geändert.', 'gut');
     }
     if (what === 'station') toast('Station gespeichert.', 'gut');
+  }
+
+  function onOkMessage(m) {
+    if (m.what === 'bm_import') onImportResult(m);
+    else onOk(m.what);
   }
 
   // ------------------------------------------------------------ chat (as on /remote)
@@ -1237,7 +1450,7 @@
           case 'logout': onLogout(); break;
           case 'users': onUsers(m.list); break;
           case 'antennas': onAntennas(m); break;
-          case 'ok': onOk(m.what); break;
+          case 'ok': onOkMessage(m); break;
           case 'error': st.pending = null; showError(m.msg); break;
           default: break;
         }
@@ -1316,6 +1529,10 @@
     $('lz-plus').addEventListener('click', () => bookmarkDialog(null));
     $('form-lz').addEventListener('submit', saveBookmark);
     $('lz-nurband').addEventListener('change', renderBookmarkBox);
+    $('lz-export').addEventListener('click', exportBookmarks);
+    $('lz-import').addEventListener('click', () => { $('lz-datei').value = ''; $('lz-datei').click(); });
+    $('lz-datei').addEventListener('change', (e) => { if (e.target.files[0]) importFile(e.target.files[0]); });
+    $('form-import').addEventListener('submit', runImport);
     $('nutzer-plus').addEventListener('click', () => userDialog(null));
     $('form-nutzer').addEventListener('submit', saveUser);
 
@@ -1374,6 +1591,7 @@
 
     if (!EMBED) {
       wireTheme();
+      setupTables();
       wireDialogs();
       renderAccount();
       $('audio').addEventListener('click', toggleAudio);

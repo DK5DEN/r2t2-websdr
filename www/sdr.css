@@ -107,3 +107,18 @@ html.embed .rm-wf-skala { border-radius: 0; border-left: 0; border-right: 0; bor
 html.embed .rm-wf .rm-spektrum { height: 24%; min-height: 3rem; }
 html.embed .sdr-wf-flaeche { min-height: 0; }
 html.embed .rm-wasserfall { border-radius: 0; }
+
+/* bookmark box: (+) in the box head, compact table without wasted space */
+.sdr-kopf-plus { width: 1.6rem; height: 1.6rem; font-size: 0.9rem; margin-left: 0.5rem; }
+.rm-kopf-schalter + .sdr-kopf-plus { margin-left: 0.6rem; }
+#lz-box-teil .filters.flach { padding: 0.5rem 0.7rem; margin: 0 0 0.4rem; gap: 0.5rem 0.7rem; }
+#lz-box-teil .count-line { margin: 0 0 0.3rem; font-size: 0.82rem; }
+#lz-box-teil .data-wrap { margin: 0; }
+table.data.sdr-kompakt td, table.data.sdr-kompakt th { padding: 0.18rem 0.45rem; }
+table.data.sdr-kompakt th[data-sort] button { padding: 0.35rem 0.45rem; }
+table.data.sdr-kompakt .filterzeile th { padding: 0.25rem 0.45rem; }
+table.data.sdr-kompakt .btn-sm { padding: 0.15rem 0.55rem; min-height: 0; font-size: 0.8rem; }
+table.data.sdr-kompakt .btn-stift, table.data.sdr-kompakt .btn-weg { width: 1.6rem; height: 1.6rem; padding: 0; }
+.sdr-kompakt .btn-stift svg, .sdr-kompakt .btn-weg svg { width: 0.85rem; height: 0.85rem; }
+#lz-box-teil .tabellen-fuss { padding: 0.3rem 0.6rem; }
+#lz-box-teil .seiten-nav button { min-width: 1.7rem; height: 1.7rem; }

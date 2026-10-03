@@ -6,9 +6,9 @@
 <title>R2T2 WebSDR</title>
 <meta name="color-scheme" content="dark light">
 <link rel="icon" href="icon.svg" type="image/svg+xml">
-<link rel="stylesheet" href="afu-style.css?v=20261003j">
-<link rel="stylesheet" href="remote.css?v=20261003j">
-<link rel="stylesheet" href="sdr.css?v=20261003j">
+<link rel="stylesheet" href="afu-style.css?v=20261004e">
+<link rel="stylesheet" href="remote.css?v=20261004e">
+<link rel="stylesheet" href="sdr.css?v=20261004e">
 <script>
   /* light/dark choice before the first paint, same key as afu.tools */
   try { var t = localStorage.getItem('afu.tools:theme'); if (t === 'light' || t === 'dark') document.documentElement.dataset.theme = t; } catch (e) {}
@@ -162,10 +162,59 @@
   <div class="rm-listen">
     <section class="rm-kasten" aria-labelledby="lz-titel">
       <div class="rm-kasten-kopf"><span id="lz-titel">Lesezeichen</span>
-        <label class="rm-schalter rm-kopf-schalter"><input type="checkbox" id="lz-nurband" checked> nur dieses Band</label></div>
+        <label class="rm-schalter rm-kopf-schalter"><input type="checkbox" id="lz-nurband" checked> nur dieses Band</label>
+        <button type="button" class="icon-btn sdr-kopf-plus" id="lz-neu" hidden title="Lesezeichen für die eingestellte Frequenz anlegen" aria-label="Lesezeichen hier anlegen">＋</button></div>
       <div class="rm-kasten-inhalt">
-        <div id="lz-box"></div>
-        <button type="button" class="btn-sm" id="lz-neu" hidden>＋ Lesezeichen hier</button>
+        <p class="field-hint" id="lz-box-leer" hidden></p>
+        <div id="lz-box-teil">
+          <div class="filters flach nur-schmal">
+            <div class="field nur-schmal" id="heim-bf">
+              <label for="bf">Frequenz</label>
+              <input id="bf" placeholder="kHz oder von-bis" autocomplete="off" inputmode="decimal">
+            </div>
+            <div class="field grow nur-schmal" id="heim-bq">
+              <label for="bq">Suche</label>
+              <input id="bq" placeholder="Name" autocomplete="off">
+            </div>
+            <div class="field nur-schmal" id="heim-bart">
+              <label for="bart">Betriebsart</label>
+              <select id="bart" class="sdr-art-wahl"><option value="">alle</option></select>
+            </div>
+          </div>
+          <p class="count-line" id="lz-box-zahl"></p>
+          <div class="data-wrap">
+            <table class="data rm-klein-tabelle sdr-kompakt" id="lz-box-tabelle">
+              <thead>
+                <tr>
+                  <th data-sort="freq" class="num"><button type="button">MHz<span class="pfeil" aria-hidden="true"></span></button></th>
+                  <th data-sort="mode"><button type="button">Art<span class="pfeil" aria-hidden="true"></span></button></th>
+                  <th data-sort="name"><button type="button">Name<span class="pfeil" aria-hidden="true"></span></button></th>
+                  <th></th>
+                </tr>
+                <tr class="filterzeile">
+                  <th data-filter="bf"></th>
+                  <th data-filter="bart"></th>
+                  <th data-filter="bq"></th>
+                  <th></th>
+                </tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+          </div>
+          <div class="tabellen-fuss" id="lz-box-fuss">
+            <p class="fuss-info"></p>
+            <nav class="seiten-nav" aria-label="Seitenwahl"></nav>
+            <label class="fuss-menge">Einträge
+              <select>
+                <option value="10">10</option>
+                <option value="25">25</option>
+                <option value="50">50</option>
+                <option value="100">100</option>
+                <option value="alle">alle</option>
+              </select>
+            </label>
+          </div>
+        </div>
       </div>
     </section>
     <section class="rm-kasten" aria-labelledby="chat-titel" id="chat-kasten">
@@ -252,15 +301,64 @@
   </div>
 
   <section class="rm-tab-seite" role="tabpanel" data-seite="lz">
-    <p class="field-hint">Lesezeichen sieht jeder Besucher auf der Band-Skala, im Spektrum und im Kasten „Lesezeichen“.</p>
-    <p class="sdr-leer" id="lz-leer">Noch keine Lesezeichen. Leg das erste mit dem Knopf darunter an, es übernimmt die eingestellte Frequenz.</p>
-    <div class="data-wrap" id="lz-wrap">
-      <table class="data">
-        <thead><tr><th>Name</th><th class="num">Frequenz</th><th>Art</th><th></th></tr></thead>
-        <tbody id="lz-liste"></tbody>
-      </table>
+    <p class="btn-row">
+      <button type="button" class="btn-sm" id="lz-plus">＋ Lesezeichen</button>
+      <button type="button" class="btn-sm" id="lz-import">Importieren …</button>
+      <button type="button" class="btn-sm" id="lz-export">Exportieren</button>
+      <input type="file" id="lz-datei" accept=".json,application/json" hidden>
+    </p>
+    <p class="field-hint">Lesezeichen sieht jeder Besucher auf der Band-Skala, im Spektrum und im Kasten „Lesezeichen“. Import und Export im Format von OpenWebRX (<code>bookmarks.json</code>); digitale Betriebsarten werden auf ihre Grundart abgebildet, z. B. FT8 auf USB, DMR auf FM.</p>
+    <p class="field-hint" id="lz-export-hinweis" hidden></p>
+    <p class="sdr-leer" id="lz-leer">Noch keine Lesezeichen. „＋ Lesezeichen“ übernimmt die eingestellte Frequenz, „Importieren …“ liest eine Datei von OpenWebRX.</p>
+    <div id="lz-teil">
+      <div class="filters flach nur-schmal">
+        <div class="field grow nur-schmal" id="heim-lzq">
+          <label for="lzq">Suche</label>
+          <input id="lzq" placeholder="Name" autocomplete="off">
+        </div>
+        <div class="field nur-schmal" id="heim-lzf">
+          <label for="lzf">Frequenz</label>
+          <input id="lzf" placeholder="kHz oder von-bis" autocomplete="off" inputmode="decimal">
+        </div>
+        <div class="field nur-schmal" id="heim-lzart">
+          <label for="lzart">Betriebsart</label>
+          <select id="lzart" class="sdr-art-wahl"><option value="">alle</option></select>
+        </div>
+      </div>
+      <p class="count-line" id="lz-zahl"></p>
+      <div class="data-wrap">
+        <table class="data" id="lz-tabelle">
+          <thead>
+            <tr>
+              <th data-sort="name"><button type="button">Name<span class="pfeil" aria-hidden="true"></span></button></th>
+              <th data-sort="freq" class="num"><button type="button">Frequenz<span class="pfeil" aria-hidden="true"></span></button></th>
+              <th data-sort="mode"><button type="button">Betriebsart<span class="pfeil" aria-hidden="true"></span></button></th>
+              <th></th>
+            </tr>
+            <tr class="filterzeile">
+              <th data-filter="lzq"></th>
+              <th data-filter="lzf"></th>
+              <th data-filter="lzart"></th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody id="lz-liste"></tbody>
+        </table>
+      </div>
+      <div class="tabellen-fuss" id="lz-fuss">
+        <p class="fuss-info"></p>
+        <nav class="seiten-nav" aria-label="Seitenwahl"></nav>
+        <label class="fuss-menge">Einträge
+          <select>
+            <option value="10">10</option>
+            <option value="25">25</option>
+            <option value="50">50</option>
+            <option value="100">100</option>
+            <option value="alle">alle</option>
+          </select>
+        </label>
+      </div>
     </div>
-    <p class="btn-row sdr-plus"><button type="button" class="btn-sm" id="lz-plus">＋ Lesezeichen</button></p>
   </section>
 
   <section class="rm-tab-seite" role="tabpanel" data-seite="ant">
@@ -269,14 +367,56 @@
   </section>
 
   <section class="rm-tab-seite" role="tabpanel" data-seite="nutzer">
+    <p class="btn-row"><button type="button" class="btn-sm" id="nutzer-plus">＋ Konto</button></p>
+    <p class="field-hint">Admin: alles. Lesezeichen: Lesezeichen pflegen. Nutzer: hören und chatten, wenn das nur nach Anmeldung erlaubt ist.</p>
+    <div class="filters flach nur-schmal">
+      <div class="field grow nur-schmal" id="heim-nuq">
+        <label for="nuq">Suche</label>
+        <input id="nuq" placeholder="Name" autocomplete="off">
+      </div>
+      <div class="field nur-schmal" id="heim-nurolle">
+        <label for="nurolle">Rolle</label>
+        <select id="nurolle">
+          <option value="">alle</option>
+          <option value="admin">Admin</option>
+          <option value="lesezeichen">Lesezeichen</option>
+          <option value="nutzer">Nutzer</option>
+        </select>
+      </div>
+    </div>
+    <p class="count-line" id="nutzer-zahl"></p>
     <div class="data-wrap">
-      <table class="data">
-        <thead><tr><th>Name</th><th>Rolle</th><th>Angemeldet</th><th></th></tr></thead>
+      <table class="data" id="nutzer-tabelle">
+        <thead>
+          <tr>
+            <th data-sort="name"><button type="button">Name<span class="pfeil" aria-hidden="true"></span></button></th>
+            <th data-sort="role"><button type="button">Rolle<span class="pfeil" aria-hidden="true"></span></button></th>
+            <th data-sort="online"><button type="button">Angemeldet<span class="pfeil" aria-hidden="true"></span></button></th>
+            <th></th>
+          </tr>
+          <tr class="filterzeile">
+            <th data-filter="nuq"></th>
+            <th data-filter="nurolle"></th>
+            <th></th>
+            <th></th>
+          </tr>
+        </thead>
         <tbody id="nutzer-liste"></tbody>
       </table>
     </div>
-    <p class="btn-row sdr-plus"><button type="button" class="btn-sm" id="nutzer-plus">＋ Konto</button></p>
-    <p class="field-hint">Admin: alles. Lesezeichen: Lesezeichen pflegen. Nutzer: hören und chatten, wenn das nur nach Anmeldung erlaubt ist.</p>
+    <div class="tabellen-fuss" id="nutzer-fuss">
+      <p class="fuss-info"></p>
+      <nav class="seiten-nav" aria-label="Seitenwahl"></nav>
+      <label class="fuss-menge">Einträge
+        <select>
+          <option value="10">10</option>
+          <option value="25">25</option>
+          <option value="50">50</option>
+          <option value="100">100</option>
+          <option value="alle">alle</option>
+        </select>
+      </label>
+    </div>
   </section>
 
   <section class="rm-tab-seite" role="tabpanel" data-seite="station">
@@ -363,6 +503,26 @@
     <div class="rf-dialog-fuss btn-row">
       <button type="button" class="btn-sm" data-schliessen>Abbrechen</button>
       <button type="submit" class="btn">Speichern</button>
+    </div>
+  </form>
+</dialog>
+
+<!-- ----------------------------------------------------- Lesezeichen-Import -->
+<dialog class="rf-dialog rm-klein-dialog" id="dlg-import" aria-labelledby="dlg-import-titel">
+  <form method="dialog" id="form-import">
+    <div class="rf-dialog-kopf">
+      <h2 id="dlg-import-titel">Lesezeichen importieren</h2>
+      <button type="button" class="icon-btn" data-schliessen aria-label="Schließen">✕</button>
+    </div>
+    <p class="note fehler" data-fehler hidden></p>
+    <p id="import-info"></p>
+    <div class="sdr-felder">
+      <label class="rm-schalter"><input type="radio" name="import-art" value="add" checked> Ergänzen, schon vorhandene (gleiche Frequenz und Name) überspringen</label>
+      <label class="rm-schalter"><input type="radio" name="import-art" value="replace"> Ersetzen: alle bisherigen Lesezeichen löschen</label>
+    </div>
+    <div class="rf-dialog-fuss btn-row">
+      <button type="button" class="btn-sm" data-schliessen>Abbrechen</button>
+      <button type="submit" class="btn">Importieren</button>
     </div>
   </form>
 </dialog>
@@ -454,7 +614,8 @@
 </dialog>
 
 <div class="rm-toasts" id="toasts" role="status" aria-live="polite"></div>
-<script src="kdf.js?v=20261003j"></script>
-<script src="app.js?v=20261003j"></script>
+<script src="kdf.js?v=20261004e"></script>
+<script src="afu-tabelle.js?v=20261004e"></script>
+<script src="app.js?v=20261004e"></script>
 </body>
 </html>

@@ -145,12 +145,15 @@ static void put_utf8(char *out, size_t n, size_t *i, unsigned cp)
     }
 }
 
-/* string value with JSON escapes; control characters become spaces */
-static int json_str(const char *s, const char *key, char *out, size_t n)
+/*
+ * JSON string starting at p (on the opening quote) into out, escapes resolved,
+ * control characters as spaces. Returns the position after the closing quote,
+ * NULL if p is not a string.
+ */
+static const char *json_read_str(const char *p, char *out, size_t n)
 {
-    const char *p = json_find(s, key);
     if (!p || *p != '"')
-        return 0;
+        return NULL;
     p++;
     size_t i = 0;
     while (*p && *p != '"') {
@@ -184,7 +187,12 @@ static int json_str(const char *s, const char *key, char *out, size_t n)
     }
     out[i] = 0;
     utf8_trim(out);
-    return 1;
+    return *p == '"' ? p + 1 : p;
+}
+
+static int json_str(const char *s, const char *key, char *out, size_t n)
+{
+    return json_read_str(json_find(s, key), out, n) != NULL;
 }
 
 static void send_text(client_t *c, const char *s)
@@ -543,7 +551,8 @@ static void refresh_user(const char *name)
 
 static void send_bookmarks(client_t *c)
 {
-    static char b[24000];
+    /* up to MAX_BOOKMARKS entries of at most ~200 bytes */
+    static char b[MAX_BOOKMARKS * 200 + 64];
     bm_json(b, sizeof(b));
     if (c)
         send_text(c, b);
@@ -765,6 +774,70 @@ static int account_cmd(client_t *c, const char *cmd, const char *txt)
             send_error(c, "Lesezeichen nicht gefunden.");
         else
             send_bookmarks(NULL);
+        return 1;
+    }
+
+    /*
+     * Bulk import in parts that fit a message: items = [[freq, "mode", "name"], ...].
+     * "replace" on the first part empties the list, "done" on the last one sends
+     * the new list to everybody. The browser maps OpenWebRX modes before.
+     */
+    if (!strcmp(cmd, "bm_import")) {
+        double replace = 0, done = 0;
+        int added = 0, dup = 0, full = 0, bad = 0;
+        if (!require(c, ROLE_EDITOR))
+            return 1;
+        json_num(txt, "replace", &replace);
+        json_num(txt, "done", &done);
+        const char *p = json_find(txt, "items");
+        if (!p || *p != '[') {
+            send_error(c, "Import: keine Lesezeichen gefunden.");
+            return 1;
+        }
+        if (replace)
+            bm_clear();
+        p++;
+        while (*p) {
+            while (*p == ' ' || *p == ',')
+                p++;
+            if (*p != '[')
+                break;
+            p++;
+            char *e;
+            double f = strtod(p, &e);
+            char mode[16], nm[200];
+            p = e;
+            while (*p == ' ' || *p == ',')
+                p++;
+            p = json_read_str(p, mode, sizeof(mode));
+            if (p) {
+                while (*p == ' ' || *p == ',')
+                    p++;
+                p = json_read_str(p, nm, sizeof(nm));
+            }
+            if (!p)
+                break;
+            while (*p && *p != ']')
+                p++;
+            if (*p == ']')
+                p++;
+            int m = mode_parse(mode);
+            if (f <= 0 || f > cfg.clock / 2 || !nm[0]) {
+                bad++;
+                continue;
+            }
+            int r = bm_add(f, mode_name(m < 0 ? M_USB : m), nm);
+            if (r > 0) added++;
+            else if (r == 0) dup++;
+            else full++;
+        }
+        bm_save();
+        if (done)
+            send_bookmarks(NULL);
+        char m[200];
+        snprintf(m, sizeof(m), "{\"type\":\"ok\",\"what\":\"bm_import\",\"added\":%d,\"duplicates\":%d,"
+                 "\"full\":%d,\"invalid\":%d,\"done\":%s}", added, dup, full, bad, done ? "true" : "false");
+        send_text(c, m);
         return 1;
     }
 
