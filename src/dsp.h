@@ -6,7 +6,7 @@
 
 #include "common.h"
 
-#define DM_NT      161     /* channel filter taps at 16 kS/s */
+#define DM_NT      641     /* channel filter taps at 16 kS/s, at most (see demod_taps) */
 #define DM_NA      31      /* audio anti-alias taps before 16k -> 8k */
 #define DM_OUTMAX  2048
 
@@ -33,7 +33,7 @@ typedef struct {
     float lo, hi;                       /* passband in Hz relative to the receiver NCO */
     float tr[DM_NT], ti[DM_NT];         /* complex channel filter, reversed */
     float xr[2 * DM_NT], xi[2 * DM_NT]; /* doubled history */
-    int hp;
+    int hp, nt;                         /* history position, taps in use */
     float ah[2 * DM_NA], ataps[DM_NA];
     int ap, dec;
     float pr, pi;                       /* FM: previous sample */

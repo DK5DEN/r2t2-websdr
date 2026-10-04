@@ -6,9 +6,9 @@
 <title>R2T2 WebSDR</title>
 <meta name="color-scheme" content="dark light">
 <link rel="icon" href="icon.svg" type="image/svg+xml">
-<link rel="stylesheet" href="afu-style.css?v=20261004p">
-<link rel="stylesheet" href="remote.css?v=20261004p">
-<link rel="stylesheet" href="sdr.css?v=20261004p">
+<link rel="stylesheet" href="afu-style.css?v=20261004r">
+<link rel="stylesheet" href="remote.css?v=20261004r">
+<link rel="stylesheet" href="sdr.css?v=20261004r">
 <script>
   /* light/dark choice before the first paint, same key as afu.tools */
   try { var t = localStorage.getItem('afu.tools:theme'); if (t === 'light' || t === 'dark') document.documentElement.dataset.theme = t; } catch (e) {}
@@ -146,6 +146,11 @@
       <div class="field">
         <label for="bw">Filter</label>
         <select id="bw"></select>
+      </div>
+      <div class="field">
+        <label for="ant-wahl">Antenne</label>
+        <select id="ant-wahl"><option value="0">automatisch</option></select>
+        <p class="field-hint">„automatisch“ folgt den Antennen-Regeln. Eine andere Antenne als die des Wasserfalls belegt einen eigenen Empfänger.</p>
       </div>
       <div class="field rm-regler">
         <label for="wfmin">Wasserfall ab <span class="einheit" id="wfmin-wert"></span></label>
@@ -733,8 +738,8 @@
 </dialog>
 
 <div class="rm-toasts" id="toasts" role="status" aria-live="polite"></div>
-<script src="kdf.js?v=20261004p"></script>
-<script src="afu-tabelle.js?v=20261004p"></script>
-<script src="app.js?v=20261004p"></script>
+<script src="kdf.js?v=20261004r"></script>
+<script src="afu-tabelle.js?v=20261004r"></script>
+<script src="app.js?v=20261004r"></script>
 </body>
 </html>

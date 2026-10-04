@@ -867,7 +867,9 @@ static void listener_route(client_t *c, int may_alloc)
         hi += CW_PITCH;
     }
     int vi = -1, si = -1, in;
-    if (!no_ddc && seg_for(f, &vi, &si)) {
+    /* a chosen antenna: the waterfall's stream only if that receiver is on it */
+    if (!no_ddc && seg_for(f, &vi, &si) &&
+        (!c->ant_pref || input_for(views[vi].seg_center[si]) == c->ant_pref)) {
         if (c->rx >= 0) {
             rx_client[c->rx] = -1;
             c->rx = -1;
@@ -899,7 +901,7 @@ static void listener_route(client_t *c, int may_alloc)
             c->rx = rx;
             rx_client[rx] = (int)(c - cl);
         }
-        in = input_for(c->freq);
+        in = c->ant_pref ? c->ant_pref : input_for(c->freq);
         hw_set_input(c->rx, in);
         hw_set_freq(c->rx, f);
     }
@@ -970,12 +972,14 @@ static void listener_stop(client_t *c)
     view_check(dv);
 }
 
+/* CPU load of the listeners in units of an SSB listener: the steep filter for
+   250 Hz and narrower (641 taps) costs ~17 % of a core instead of ~9.5 % */
 static int listener_count(void)
 {
     int n = 0;
     for (int i = 0; i < MAX_CLIENTS; i++)
         if (cl[i].fd >= 0 && cl[i].listening)
-            n++;
+            n += cl[i].dm.nt >= DM_NT ? 2 : 1;
     return n;
 }
 
@@ -1812,6 +1816,21 @@ static void on_text(client_t *c, char *txt, size_t len)
         listener_stop(c);
         send_audio_state(c);
         broadcast_status();
+    } else if (!strcmp(cmd, "antenna")) {
+        /* 0 = by frequency, 1..NANT = this input for the listener's own audio */
+        if (json_num(txt, "input", &v) && v >= 0 && v <= NANT) {
+            c->ant_pref = (int)v;
+            if (c->listening) {
+                int was_own = c->rx >= 0;
+                listener_route(c, 1);
+                if (c->listening) {
+                    act_log(c, "Antenne %s", c->ant_pref ? ant_get(c->ant_pref)->name : "automatisch");
+                    send_audio_state(c);
+                    if (was_own != (c->rx >= 0))
+                        broadcast_status();
+                }
+            }
+        }
     } else if (!strcmp(cmd, "zoom")) {
         /* the part of the view this client shows; without lo/hi the whole view */
         double lo, hi;

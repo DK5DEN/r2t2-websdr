@@ -46,6 +46,7 @@ typedef struct client {
     uint16_t aqn[AQ_LEN];
     unsigned aq_head, aq_tail;
     int input;         /* antenna input of that receiver, 0 = not set */
+    int ant_pref;      /* antenna the listener chose, 0 = by frequency (Verwaltung > Antennen) */
     int listening;
     double zlo, zhi;   /* zoomed waterfall range in Hz, zhi <= zlo = whole view */
     double freq;

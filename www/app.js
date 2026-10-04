@@ -35,13 +35,17 @@ function el(tag, attrs = {}, ...children) {
   const EMBED = params.has('embed') ? params.get('embed') !== '0' : window.self !== window.top;
   if (EMBED) document.documentElement.classList.add('embed');
 
-  // Passband presets per mode: [lo, hi, label] relative to the dial frequency.
+  // Passband presets per mode, widest first: [lo, hi, label] relative to the dial frequency;
+  // def = preset chosen when switching to the mode. Narrow SSB filters sit around 1.5 kHz
+  // audio, the middle of the usual digital modes.
   const MODES = {
-    lsb: { label: 'LSB', bws: [[-2700, -300, '2,4 kHz'], [-3000, -200, '2,8 kHz'], [-2200, -400, '1,8 kHz']] },
-    usb: { label: 'USB', bws: [[300, 2700, '2,4 kHz'], [200, 3000, '2,8 kHz'], [400, 2200, '1,8 kHz']] },
-    cw:  { label: 'CW',  bws: [[-250, 250, '500 Hz'], [-125, 125, '250 Hz'], [-500, 500, '1 kHz']] },
-    am:  { label: 'AM',  bws: [[-4500, 4500, '9 kHz'], [-3000, 3000, '6 kHz'], [-6000, 6000, '12 kHz']] },
-    fm:  { label: 'FM',  bws: [[-6000, 6000, '12 kHz'], [-7500, 7500, '15 kHz'], [-4000, 4000, '8 kHz']] },
+    lsb: { label: 'LSB', def: 1, bws: [[-3000, -200, '2,8 kHz'], [-2700, -300, '2,4 kHz'], [-2200, -400, '1,8 kHz'],
+      [-2100, -900, '1,2 kHz'], [-1750, -1250, '500 Hz um 1,5 kHz'], [-1625, -1375, '250 Hz um 1,5 kHz']] },
+    usb: { label: 'USB', def: 1, bws: [[200, 3000, '2,8 kHz'], [300, 2700, '2,4 kHz'], [400, 2200, '1,8 kHz'],
+      [900, 2100, '1,2 kHz'], [1250, 1750, '500 Hz um 1,5 kHz'], [1375, 1625, '250 Hz um 1,5 kHz']] },
+    cw:  { label: 'CW', def: 1, bws: [[-500, 500, '1 kHz'], [-250, 250, '500 Hz'], [-125, 125, '250 Hz'], [-50, 50, '100 Hz']] },
+    am:  { label: 'AM', def: 1, bws: [[-6000, 6000, '12 kHz'], [-4500, 4500, '9 kHz'], [-3000, 3000, '6 kHz']] },
+    fm:  { label: 'FM', def: 1, bws: [[-7500, 7500, '15 kHz'], [-6000, 6000, '12 kHz'], [-4000, 4000, '8 kHz']] },
   };
   const MOD_ALIAS = { usb: 'usb', lsb: 'lsb', cw: 'cw', am: 'am', sam: 'am', fm: 'fm', nfm: 'fm', wfm: 'fm' };
   const DEFAULT_STEP = { lsb: 100, usb: 100, cw: 10, am: 5000, fm: 5000 };
@@ -64,7 +68,7 @@ function el(tag, attrs = {}, ...children) {
     view: -1, viewBand: -1, center: 0, span: 192000, pending: null, userBand: null,
     // view range (all receivers of the waterfall) vs. shown range (center/span, smaller when zoomed)
     vLo: 0, vHi: 0, zoomed: false, zRow: null, zFirst: 0, zIgnore: 0, zSent: 0, zTimer: 0,
-    freq: 0, mode: 'usb', bw: 0, step: 100,
+    freq: 0, mode: 'usb', bw: 1, step: 100, ant: 0,
     listening: false, wantAudio: false, muted: false,
     wfMin: 40, wfMax: 120, autoFrames: 8, smooth: null, lastBins: null,
     editing: false, bookmarks: [], bmBoxes: [],
@@ -745,6 +749,16 @@ function el(tag, attrs = {}, ...children) {
     sel.value = st.mode;
   }
 
+  // antenna for the own audio: 0 = by frequency (Verwaltung > Antennen)
+  function renderAntennaChoice() {
+    const sel = $('ant-wahl');
+    if (!sel || !st.cfg) return;
+    const names = st.cfg.antennas || [];
+    sel.replaceChildren(el('option', { value: '0' }, 'automatisch'),
+      ...names.map((n, i) => el('option', { value: String(i + 1) }, n || `ANT${i + 1}`)));
+    sel.value = String(st.ant);
+  }
+
   function renderBw() {
     const sel = $('bw');
     sel.innerHTML = '';
@@ -759,7 +773,7 @@ function el(tag, attrs = {}, ...children) {
 
   function setMode(mode, quiet) {
     if (!MODES[mode]) return;
-    if (st.mode !== mode) { st.mode = mode; st.bw = 0; }
+    if (st.mode !== mode) { st.mode = mode; st.bw = MODES[mode].def; }
     st.step = DEFAULT_STEP[mode];
     $('step').value = st.step;
     $('mode').value = mode;
@@ -1658,6 +1672,8 @@ function el(tag, attrs = {}, ...children) {
     } else {
       ensureView(st.freq, true);
     }
+    renderAntennaChoice();
+    if (st.ant) send({ cmd: 'antenna', input: st.ant });
     if (st.wantAudio) { send({ cmd: 'start' }); sendTune(); }
   }
 
@@ -1942,6 +1958,12 @@ function el(tag, attrs = {}, ...children) {
       $('stumm').addEventListener('click', () => setMuted(!st.muted));
       $('mode').addEventListener('change', (e) => setMode(e.target.value));
       $('bw').addEventListener('change', (e) => { st.bw = Number(e.target.value); tuneTo(st.freq); });
+      st.ant = Number(store.get('ant', 0)) || 0;
+      $('ant-wahl').addEventListener('change', (e) => {
+        st.ant = Number(e.target.value);
+        store.set('ant', st.ant);
+        send({ cmd: 'antenna', input: st.ant });
+      });
       $('step').addEventListener('change', (e) => { st.step = Number(e.target.value); });
       $('ab').addEventListener('click', () => tuneTo(Math.round(st.freq / st.step) * st.step - st.step));
       $('auf').addEventListener('click', () => tuneTo(Math.round(st.freq / st.step) * st.step + st.step));

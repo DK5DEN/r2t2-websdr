@@ -37,6 +37,17 @@ ADPCM). Listeners run on two threads, one per core; 12 listeners keep full audio
 16 start to drop packets, so `max_listeners` defaults to 14. A higher-priority listener
 bumps the lowest one when the limit is reached. The waterfall averages two FFTs per line.
 
+Filters: SSB 2.8, 2.4, 1.8, 1.2 kHz and 500 or 250 Hz around 1.5 kHz audio (digital modes);
+CW 1 kHz, 500, 250, 100 Hz; AM 12, 9, 6 kHz; FM 15, 12, 8 kHz. The channel filter grows with
+narrower passbands (161 taps from 1.7 kHz, 241, 401, 641 below 400 Hz; skirts ~550 down to
+~140 Hz). A listener with the 641-tap filter costs ~17 % of a core and counts twice against
+`max_listeners`.
+
+Antenna: a listener may choose an input instead of the one the antenna ranges give. If the
+waterfall's receiver is on that input, the audio still comes from it; otherwise the listener
+gets a receiver of its own on the chosen input (by priority). The shared waterfall is not
+switched.
+
 Audio is demodulated on the device (USB, LSB, CW, AM, FM with AGC and squelch), resampled to
 8 kHz, IMA-ADPCM compressed (~32 kbit/s) and sent over a WebSocket. The browser plays it with
 the Web Audio API (no AudioWorklet, so plain HTTP works).
@@ -255,6 +266,7 @@ Client to server (JSON text frames):
 | `tune` | `freq` (Hz), `mode` (`usb`, `lsb`, `cw`, `am`, `fm`/`nfm`), `lo`, `hi` (passband in Hz relative to `freq`) |
 | `start` / `stop` | audio on/off (a receiver only outside every active waterfall) |
 | `squelch` | `level` in dBFS, `-999` = off |
+| `antenna` | `input`: 0 = by frequency (antenna ranges), 1 or 2 = this input for the own audio |
 | `zoom` | `lo`, `hi` (Hz): only this part of the view is sent, at up to the full FFT resolution; without fields the whole view |
 | `chat` | `text`, `name` (guests only) |
 | `challenge` | `user`, `purpose` (`login` or `passwd`) |

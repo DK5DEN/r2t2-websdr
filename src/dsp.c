@@ -294,19 +294,41 @@ void demod_init(demod_t *d)
     demod_set(d, M_USB, 300, 2700);
 }
 
+/*
+ * Taps for a passband width: a Blackman filter's skirts are ~5.5 fs / N wide
+ * (161 taps: ~550 Hz), fine for SSB but as wide as a CW filter itself. Narrow
+ * passbands get longer, steeper filters (641 taps: ~140 Hz), at up to four
+ * times the CPU of the channel filter for that listener.
+ */
+static int demod_taps(float width)
+{
+    if (width >= 1700) return 161;
+    if (width >= 1000) return 241;
+    if (width >= 400)  return 401;
+    return 641;
+}
+
 void demod_set(demod_t *d, int mode, float lo, float hi)
 {
-    double h[DM_NT];
+    static double h[DM_NT];
+    int nt = demod_taps(hi - lo);
     double fc = (hi - lo) / 2.0 / FS_NARROW;
     double f0 = (hi + lo) / 2.0 / FS_NARROW;
-    int M = DM_NT / 2;
+    int M = nt / 2;
 
-    lowpass(h, DM_NT, fc);
+    if (nt != d->nt) {
+        /* other length: start the history afresh */
+        memset(d->xr, 0, sizeof(d->xr));
+        memset(d->xi, 0, sizeof(d->xi));
+        d->hp = 0;
+        d->nt = nt;
+    }
+    lowpass(h, nt, fc);
     /* shift the lowpass to the passband centre; store reversed for the dot product */
-    for (int n = 0; n < DM_NT; n++) {
+    for (int n = 0; n < nt; n++) {
         int m = n - M;
-        d->tr[DM_NT - 1 - n] = (float)(h[n] * cos(2 * M_PI * f0 * m));
-        d->ti[DM_NT - 1 - n] = (float)(h[n] * sin(2 * M_PI * f0 * m));
+        d->tr[nt - 1 - n] = (float)(h[n] * cos(2 * M_PI * f0 * m));
+        d->ti[nt - 1 - n] = (float)(h[n] * sin(2 * M_PI * f0 * m));
     }
     if (mode != d->mode) {
         d->dc = 0;
@@ -327,15 +349,16 @@ void demod_process(demod_t *d, const float *iq, int n)
 {
     for (int i = 0; i < n; i++) {
         /* complex channel filter */
-        d->xr[d->hp] = d->xr[d->hp + DM_NT] = iq[2 * i];
-        d->xi[d->hp] = d->xi[d->hp + DM_NT] = iq[2 * i + 1];
+        const int nt = d->nt;
+        d->xr[d->hp] = d->xr[d->hp + nt] = iq[2 * i];
+        d->xi[d->hp] = d->xi[d->hp + nt] = iq[2 * i + 1];
         const float *br = &d->xr[d->hp + 1], *bi = &d->xi[d->hp + 1];
         float yr = 0, yi = 0;
-        for (int k = 0; k < DM_NT; k++) {
+        for (int k = 0; k < nt; k++) {
             yr += d->tr[k] * br[k] - d->ti[k] * bi[k];
             yi += d->tr[k] * bi[k] + d->ti[k] * br[k];
         }
-        if (++d->hp == DM_NT)
+        if (++d->hp == nt)
             d->hp = 0;
 
         float p = yr * yr + yi * yi;
