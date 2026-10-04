@@ -184,3 +184,23 @@ unsigned hw_stream_drops(int fd)
         return 0;
     return st.tp_drops;
 }
+
+/*
+ * A packet socket keeps reporting POLLERR until its pending error is read
+ * (e.g. ENETDOWN after rad0 went down and up once). Unread, poll() returns
+ * at once and the main loop spins at 100 % CPU. Returns the error, 0 if none.
+ */
+int hw_stream_clear_error(int fd)
+{
+    int err = 0;
+    socklen_t len = sizeof(err);
+    if (getsockopt(fd, SOL_SOCKET, SO_ERROR, &err, &len) < 0)
+        return -1;
+    if (!err) {
+        /* error queue entries also raise POLLERR; drain them */
+        char buf[256];
+        while (recv(fd, buf, sizeof(buf), MSG_ERRQUEUE | MSG_DONTWAIT) >= 0)
+            err = -2;
+    }
+    return err;
+}

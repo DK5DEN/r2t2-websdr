@@ -19,5 +19,6 @@ void hw_set_att(int adc, int db);
 int hw_open_stream(const char *ifname);
 unsigned hw_stream_read(void (*cb)(const uint8_t *frame, int len));
 unsigned hw_stream_drops(int fd);
+int hw_stream_clear_error(int fd);
 
 #endif

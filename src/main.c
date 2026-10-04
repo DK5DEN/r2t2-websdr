@@ -1426,6 +1426,15 @@ int main(int argc, char **argv)
             break;
         }
 
+        if (pfd[1].revents & POLLERR) {
+            static time_t last_err;
+            int err = hw_stream_clear_error(sfd);
+            if (now_s() - last_err >= 60) {
+                logmsg("stream socket error %d (%s), cleared", err, err > 0 ? strerror(err) : "error queue");
+                last_err = now_s();
+            }
+        }
+
         npkt += hw_stream_read(on_packet);
 
         if (pfd[0].revents & POLLIN) {
