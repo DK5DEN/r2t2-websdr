@@ -11,7 +11,7 @@
 #define AUDIO_BLOCK  256      /* audio samples per websocket packet */
 #define CW_PITCH     700.0    /* CW beat note in Hz */
 #define MAX_BANDS    32
-#define MAX_CLIENTS  32
+#define MAX_CLIENTS  64
 
 #include <string.h>
 

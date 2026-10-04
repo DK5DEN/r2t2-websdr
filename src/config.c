@@ -104,8 +104,8 @@ void config_defaults(config_t *c)
     copy(c->title, sizeof(c->title), "R2T2 WebSDR");
     c->clock = 122.88e6;
     c->wf_fps = 10;
-    c->max_clients = 20;
-    c->max_listeners = 14;
+    c->max_clients = 48;
+    c->max_listeners = 30;
     copy(c->state_dir, sizeof(c->state_dir), "/var/lib/r2t2sdr");
     c->chat = 2;
 }

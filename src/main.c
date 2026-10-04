@@ -71,29 +71,38 @@ static view_t views[MAX_VIEWS];
 static int nviews;
 static int rx_view[NRX];
 static int rx_seg[NRX];
+static unsigned rx_gen[NRX], rx_seq[NRX];   /* retunes, wide-stream packets */
 static int rx_client[NRX];
 static volatile sig_atomic_t running = 1;
 static int verbose;
 /*
- * Listener threads: listeners fed from the wide stream (DDC + demod + ADPCM,
- * ~9.5 % of a core each) run on NWORK threads, one per core; client slot i
- * belongs to thread i % NWORK. The main loop hands each thread the samples of
- * every segment its listeners need (worker_t.ring) and sends the audio
+ * Listener threads: listeners fed from the wide stream run on NWORK threads, one per
+ * core. A segment (the receiver rx feeding it) belongs to thread rx % NWORK, so its FFT
+ * is computed once (~7 % of a core); each listener on it then costs ~3.6 % for its part,
+ * channel filter, demodulator and ADPCM, independent of the filter width. The main loop
+ * hands each thread the samples of its segments that have listeners (worker_t.ring) and sends the audio
  * packets the threads leave in each client's aq. Listener state (dview, dseg,
- * ddc, dm, listening, client slots) changes only under dsp_lock(), which takes
+ * fc, dm, listening, client slots) changes only under dsp_lock(), which takes
  * every thread's mutex.
  */
 #define NWORK    2
 #define BLK_RING 1024
 typedef struct {
-    int16_t view, seg, n;
+    int16_t view, seg, n, rx;
+    unsigned seq, gen;   /* packet number of this receiver, tuning generation */
     float iq[2 * 128];
 } blk_t;
+/* fast-convolution state of one receiver's wide stream, kept by each listener thread */
+typedef struct {
+    fcseg_t fc;
+    unsigned seq, gen;
+} wseg_t;
 typedef struct {
     blk_t ring[BLK_RING];
     unsigned head, tail, drops;
     pthread_mutex_t lock;
     int id;
+    wseg_t seg[NRX];
 } worker_t;
 static worker_t work[NWORK];
 
@@ -570,6 +579,7 @@ static void view_apply(int id, int n)
         int rx = v->seg_rx[s];
         rx_view[rx] = id;
         rx_seg[rx] = s;
+        rx_gen[rx]++;
         hw_set_input(rx, input_for(v->seg_center[s]));
         hw_set_freq(rx, v->seg_center[s]);
         wf_reset(&v->wf[s]);
@@ -876,13 +886,12 @@ static void listener_route(client_t *c, int may_alloc)
         }
         if (c->dview != vi || c->dseg != si) {
             int old = c->dview;
-            ddc_init(&c->ddc);
             c->dview = vi;
             c->dseg = si;
             if (old != vi)
                 view_check(old);
         }
-        ddc_set(&c->ddc, f - views[vi].seg_center[si]);
+        fc_set(&c->fc, f - views[vi].seg_center[si]);
         in = input_for(views[vi].seg_center[si]);
     } else {
         int old = c->dview;
@@ -972,14 +981,12 @@ static void listener_stop(client_t *c)
     view_check(dv);
 }
 
-/* CPU load of the listeners in units of an SSB listener: the steep filter for
-   250 Hz and narrower (641 taps) costs ~17 % of a core instead of ~9.5 % */
 static int listener_count(void)
 {
     int n = 0;
     for (int i = 0; i < MAX_CLIENTS; i++)
         if (cl[i].fd >= 0 && cl[i].listening)
-            n += cl[i].dm.nt >= DM_NT ? 2 : 1;
+            n++;
     return n;
 }
 
@@ -1188,7 +1195,7 @@ static void send_act_log(client_t *c)
 /* who is connected and what they do, for admins */
 static void send_online(client_t *c)
 {
-    static char b[16384];
+    static char b[32768];
     long now = now_s();
     int o = snprintf(b, sizeof(b), "{\"type\":\"online\",\"list\":[");
     int first = 1;
@@ -1985,25 +1992,28 @@ static void on_packet(const uint8_t *buf, int len)
                 }
             }
             /* listeners cut out of this segment's wide stream: to their listener thread */
-            int want[NWORK] = { 0 };
-            for (int i = 0; i < MAX_CLIENTS; i++)
-                if (cl[i].fd >= 0 && cl[i].listening && cl[i].dview == v && cl[i].dseg == sg)
-                    want[i % NWORK] = 1;
-            for (int k = 0; k < NWORK; k++) {
-                if (!want[k])
-                    continue;
-                worker_t *wk = &work[k];
+            rx_seq[rx]++;
+            int want = 0;
+            for (int i = 0; i < MAX_CLIENTS && !want; i++)
+                want = cl[i].fd >= 0 && cl[i].listening && cl[i].dview == v && cl[i].dseg == sg;
+            if (want) {
+                worker_t *wk = &work[rx % NWORK];
                 unsigned h = wk->head;
+                blk_t *b = &wk->ring[h % BLK_RING];
                 if (h - __atomic_load_n(&wk->tail, __ATOMIC_ACQUIRE) >= BLK_RING) {
                     wk->drops++;
-                    continue;
+                    b = NULL;
                 }
-                blk_t *b = &wk->ring[h % BLK_RING];
+                if (b) {
                 b->view = (int16_t)v;
                 b->seg = (int16_t)sg;
                 b->n = (int16_t)per;
+                b->rx = (int16_t)rx;
+                b->seq = rx_seq[rx];
+                b->gen = rx_gen[rx];
                 memcpy(b->iq, iq[rx], 2 * per * sizeof(float));
                 __atomic_store_n(&wk->head, h + 1, __ATOMIC_RELEASE);
+                }
             }
         } else {
             client_t *c = &cl[rx_client[rx]];
@@ -2020,8 +2030,10 @@ static void on_packet(const uint8_t *buf, int len)
 static void *listener_thread(void *arg)
 {
     worker_t *wk = arg;
-    float nb[2 * 32];
+    static __thread float nb[2 * FC_OUT];
     uint8_t pkt[AQ_SIZE];
+    for (int r = 0; r < NRX; r++)
+        fc_seg_reset(&wk->seg[r].fc);
     for (;;) {
         unsigned t = wk->tail;
         if (t == __atomic_load_n(&wk->head, __ATOMIC_ACQUIRE)) {
@@ -2029,21 +2041,33 @@ static void *listener_thread(void *arg)
             continue;
         }
         const blk_t *b = &wk->ring[t % BLK_RING];
+        wseg_t *ws = &wk->seg[b->rx];
+        /* receiver retuned, or packets missing: the window no longer fits together */
+        if (ws->gen != b->gen || ws->seq + 1 != b->seq)
+            fc_seg_reset(&ws->fc);
+        ws->gen = b->gen;
+        ws->seq = b->seq;
         pthread_mutex_lock(&wk->lock);
-        for (int i = wk->id; i < MAX_CLIENTS; i += NWORK) {
-            client_t *c = &cl[i];
-            if (c->fd < 0 || !c->listening || c->dview != b->view || c->dseg != b->seg)
+        for (int off = 0; off < b->n;) {
+            off += fc_seg_feed(&ws->fc, b->iq + 2 * off, b->n - off);
+            if (!ws->fc.ready)
                 continue;
-            int m = ddc_process(&c->ddc, b->iq, b->n, nb, 32);
-            demod_process(&c->dm, nb, m);
-            int n;
-            while ((n = demod_packet(&c->dm, pkt)) > 0) {
-                unsigned h = c->aq_head;
-                if (h - __atomic_load_n(&c->aq_tail, __ATOMIC_ACQUIRE) >= AQ_LEN)
-                    continue;   /* main loop behind: drop */
-                memcpy(c->aq[h % AQ_LEN], pkt, n);
-                c->aqn[h % AQ_LEN] = (uint16_t)n;
-                __atomic_store_n(&c->aq_head, h + 1, __ATOMIC_RELEASE);
+            ws->fc.ready = 0;
+            for (int i = 0; i < MAX_CLIENTS; i++) {
+                client_t *c = &cl[i];
+                if (c->fd < 0 || !c->listening || c->dview != b->view || c->dseg != b->seg)
+                    continue;
+                int m = fc_out(&ws->fc, &c->fc, nb);
+                demod_process(&c->dm, nb, m);
+                int n;
+                while ((n = demod_packet(&c->dm, pkt)) > 0) {
+                    unsigned h = c->aq_head;
+                    if (h - __atomic_load_n(&c->aq_tail, __ATOMIC_ACQUIRE) >= AQ_LEN)
+                        continue;   /* main loop behind: drop */
+                    memcpy(c->aq[h % AQ_LEN], pkt, n);
+                    c->aqn[h % AQ_LEN] = (uint16_t)n;
+                    __atomic_store_n(&c->aq_head, h + 1, __ATOMIC_RELEASE);
+                }
             }
         }
         pthread_mutex_unlock(&wk->lock);

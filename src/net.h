@@ -40,7 +40,7 @@ typedef struct client {
     int view;          /* waterfall view, -1 = none */
     int rx;            /* own receiver for audio (narrow stream), -1 = none */
     int dview, dseg;   /* or: view segment whose wide stream feeds the audio, -1 = none */
-    ddc_t ddc;
+    fclis_t fc;        /* its part of the segment's fast convolution */
     /* audio packets made by the listener thread, sent by the main loop */
     uint8_t aq[AQ_LEN][AQ_SIZE];
     uint16_t aqn[AQ_LEN];

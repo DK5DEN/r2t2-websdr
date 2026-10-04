@@ -6,7 +6,11 @@
 
 #include "common.h"
 
-#define DM_NT      641     /* channel filter taps at 16 kS/s, at most (see demod_taps) */
+/* channel filter at 16 kS/s by fast convolution (overlap-save): CF_N-point FFTs, CF_HOP new
+   samples per block, filters up to DM_NT taps; the cost does not depend on the length */
+#define CF_N       1024
+#define CF_HOP     384
+#define DM_NT      (CF_N - CF_HOP + 1)   /* 641 */
 #define DM_NA      31      /* audio anti-alias taps before 16k -> 8k */
 #define DM_OUTMAX  2048
 
@@ -31,9 +35,10 @@ typedef struct {
 typedef struct {
     int mode;
     float lo, hi;                       /* passband in Hz relative to the receiver NCO */
-    float tr[DM_NT], ti[DM_NT];         /* complex channel filter, reversed */
-    float xr[2 * DM_NT], xi[2 * DM_NT]; /* doubled history */
-    int hp, nt;                         /* history position, taps in use */
+    float H[2 * CF_N];                  /* channel filter spectrum, scaled by 1/CF_N */
+    float win[2 * CF_N];                /* input window: DM_NT-1 old + CF_HOP new samples */
+    float tmp[2 * CF_N], tmp2[2 * CF_N];
+    int wfill, nt;                      /* samples in win, taps of the current filter */
     float ah[2 * DM_NA], ataps[DM_NA];
     int ap, dec;
     float pr, pi;                       /* FM: previous sample */
@@ -48,21 +53,39 @@ typedef struct {
     int outn;
 } demod_t;
 
-/* listener from the wide stream: shift by offset, low-pass, 192 kS/s -> 16 kS/s */
-#define DDC_NT   192
-#define DDC_DEC  (FS_WIDE / FS_NARROW)
-#define DDC_BUF  (DDC_NT + 512)
+/*
+ * Listeners from the wide stream by fast convolution: one FC_NF-point FFT per segment
+ * (overlap-save, FC_HOP new samples per window) is shared by all its listeners; each one
+ * takes the FC_NI bins around its frequency, weighted by an anti-alias low-pass, and an
+ * FC_NI-point inverse FFT gives FC_OUT samples at 16 kS/s.
+ */
+#define DDC_DEC  (FS_WIDE / FS_NARROW)   /* 12 */
+#define FC_NF    6144
+#define FC_HOP   4608
+#define FC_NI    (FC_NF / DDC_DEC)        /* 512 */
+#define FC_OUT   (FC_HOP / DDC_DEC)       /* 384 */
+#define FC_LP    (FC_NF - FC_HOP + 1)     /* low-pass taps at 192 kS/s */
+
 typedef struct {
-    float pr, pi, dr, di;               /* NCO phasor and step */
-    float xr[DDC_BUF], xi[DDC_BUF];     /* mixed samples, oldest first */
-    int fill, phase;
-} ddc_t;
+    float x[2 * FC_NF];                 /* the last FC_NF input samples, oldest first */
+    float X[2 * FC_NF];                 /* spectrum of the last full window */
+    int fill;                           /* samples in x */
+    int ready;                          /* X is new: listeners take their part now */
+    unsigned long m;                    /* windows transformed so far */
+} fcseg_t;
+
+typedef struct {
+    int kc;                             /* bin nearest to the listener frequency */
+    float rr, ri, sr, si;               /* residual shift below one bin: phasor and step */
+    float y[2 * FC_NI];
+} fclis_t;
 
 int dsp_global_init(void);
 
-void ddc_init(ddc_t *d);
-void ddc_set(ddc_t *d, double offset_hz);
-int ddc_process(ddc_t *d, const float *iq, int n, float *out, int max);
+void fc_seg_reset(fcseg_t *s);
+int fc_seg_feed(fcseg_t *s, const float *iq, int n);
+void fc_set(fclis_t *l, double offset_hz);
+int fc_out(const fcseg_t *s, fclis_t *l, float *out);
 
 int wf_init(wf_t *w, int navg);
 void wf_reset(wf_t *w);

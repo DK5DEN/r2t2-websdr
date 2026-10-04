@@ -19,9 +19,21 @@ internal `rad0` interface (Ethertype `0x7232`):
   widened over up to four receivers side by side to its band edges while receivers are free
   (20 m: three receivers, 14.000 to 14.350 MHz); the browser composes the segments into one
   waterfall. Extra segments are the first thing given back when someone needs a receiver.
-- a listener inside any active waterfall is cut out of that wide stream by the CPU (shift,
-  192-tap low-pass, 192 to 16 kS/s) and costs no receiver. Only a listener outside every
-  waterfall gets a receiver of its own on the narrow stream.
+- a listener inside any active waterfall is cut out of that wide stream by the CPU and costs
+  no receiver. Only a listener outside every waterfall gets a receiver of its own on the
+  narrow stream.
+
+Listeners are cut out by fast convolution (overlap-save), in two stages:
+
+1. per segment one 6144-point FFT over the wide stream (4608 new samples per window), shared
+   by all listeners on it; each listener takes the 512 bins around its frequency, weighted by
+   an anti-alias low-pass (-6 dB at 7.5 kHz), and a 512-point inverse FFT gives 384 samples
+   at 16 kS/s; a phase correction per window and a residual shift below one bin (31.25 Hz)
+   keep the mixing continuous;
+2. the channel filter of the demodulator (up to 641 taps) as a 1024-point FFT convolution,
+   384 new samples per block.
+
+Neither stage depends on the filter width.
 
 Receivers go by priority: station > logged-in user > guest. A client may take a receiver from
 a holder of lower priority: guests first, and among the holders of the lowest priority the one
@@ -31,17 +43,22 @@ that waterfall (or its own receiver) and gets a notice. The listener limit works
 marks the bands where listening costs no receiver and, when all receivers are busy, offers
 them as buttons.
 
-CPU (two Cortex-A9 cores at 667 MHz), measured with all 8 receivers on waterfalls: 41 % of
-one core without listeners, about 9.5 % per listener (5.2 % DDC, 4.2 % demodulation and
-ADPCM). Listeners run on two threads, one per core; 12 listeners keep full audio at 152 %,
-16 start to drop packets, so `max_listeners` defaults to 14. A higher-priority listener
-bumps the lowest one when the limit is reached. The waterfall averages two FFTs per line.
+CPU (two Cortex-A9 cores at 667 MHz), measured with all 8 receivers on waterfalls: 44 % of
+one core without listeners, about 7 % per segment that has listeners (its FFT), and about
+3.6 % per listener (0.8 % its part of the segment FFT, 2.7 % channel filter and
+demodulator, 0.1 % ADPCM), the same for every filter width. Listeners run on two threads,
+one per core; a segment belongs to thread `rx % 2`, so its FFT is computed once. 30
+listeners keep full audio at 160 % of one core (of 200 %); `max_listeners` defaults to 30,
+`max_clients` to 48 (64 at most). A higher-priority listener bumps the lowest one when the
+limit is reached. The waterfall averages two FFTs per line.
+
+Before the fast convolution a listener cost 7.5 % (15 % with a 250 Hz filter) and 16
+listeners dropped packets.
 
 Filters: SSB 2.8, 2.4, 1.8, 1.2 kHz and 500 or 250 Hz around 1.5 kHz audio (digital modes);
 CW 1 kHz, 500, 250, 100 Hz; AM 12, 9, 6 kHz; FM 15, 12, 8 kHz. The channel filter grows with
 narrower passbands (161 taps from 1.7 kHz, 241, 401, 641 below 400 Hz; skirts ~550 down to
-~140 Hz). A listener with the 641-tap filter costs ~17 % of a core and counts twice against
-`max_listeners`.
+~140 Hz); with the FFT convolution the length costs nothing extra.
 
 Antenna: a listener may choose an input instead of the one the antenna ranges give. If the
 waterfall's receiver is on that input, the audio still comes from it; otherwise the listener
@@ -116,7 +133,7 @@ callsign = DL0XYZ
 location = Somewhere
 gain1 = 0
 band = 40m, 7100000, 1, lsb     # name, centre Hz, antenna input, default mode[, lo, hi]
-max_listeners = 14              # listeners fed from the wide stream (CPU guard)
+max_listeners = 30              # listeners fed from the wide stream (CPU guard)
 ```
 
 A band starts with 192 kHz around its centre and is widened to its edges (IARU region 1 by

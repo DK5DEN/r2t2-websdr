@@ -13,7 +13,8 @@
 #define AGC_FLOOR   1e-6f
 
 static fftwf_plan wf_plan;
-static void ddc_global_init(void);
+static fftwf_plan fc_plan_f, fc_plan_i, cf_plan_f, cf_plan_i;   /* FFTW_UNALIGNED: any buffer */
+static void fc_global_init(void);
 static float wf_win[WF_FFT];
 static float wf_norm;
 
@@ -29,7 +30,20 @@ int dsp_global_init(void)
     if (!wf_plan)
         return -1;
 
-    ddc_global_init();
+    {
+        fftwf_complex *x = fftwf_malloc(sizeof(fftwf_complex) * FC_NF);
+        fftwf_complex *y = fftwf_malloc(sizeof(fftwf_complex) * FC_NF);
+        unsigned fl = FFTW_MEASURE | FFTW_UNALIGNED;
+        fc_plan_f = fftwf_plan_dft_1d(FC_NF, x, y, FFTW_FORWARD, fl);
+        fc_plan_i = fftwf_plan_dft_1d(FC_NI, x, x, FFTW_BACKWARD, fl);
+        cf_plan_f = fftwf_plan_dft_1d(CF_N, x, y, FFTW_FORWARD, fl);
+        cf_plan_i = fftwf_plan_dft_1d(CF_N, x, y, FFTW_BACKWARD, fl);
+        fftwf_free(x);
+        fftwf_free(y);
+        if (!fc_plan_f || !fc_plan_i || !cf_plan_f || !cf_plan_i)
+            return -1;
+        fc_global_init();
+    }
 
     /* 4-term Blackman-Harris */
     double sum = 0;
@@ -181,83 +195,107 @@ static uint8_t ima_encode(ima_t *s, int16_t x)
 /* ---------------------------------------------------------------- wide-stream listener */
 
 /*
- * Measured on the R2T2 (Cortex-A9, NEON): ~4 % of a core per listener with
- * 160 taps (192 used here) and one decimation stage; two stages (/4, /3) were not cheaper.
- * Taps are shared, the dot products run on separate I/Q arrays so the
- * compiler vectorises them.
+ * Measured on the R2T2: the segment FFT costs ~5.7 % of a core, each listener's part
+ * (512 bins, inverse FFT) ~0.3 %; the former per-listener mixer and 192-tap decimating
+ * filter cost ~5 %.
  */
-static float ddc_taps[DDC_NT];
+static float fc_H[2 * FC_NF];   /* anti-alias low-pass spectrum, scaled by 1/FC_NF */
 
-static void ddc_global_init(void)
+static void fc_global_init(void)
 {
-    /* -6 dB at 8 kHz (output Nyquist), Blackman transition ~5.3..10.7 kHz:
-       SSB/CW flat, AM/FM edges slightly damped; what folds back into the
-       SSB passband (16..19 kHz) is fully in the stop band */
-    double h[DDC_NT], sum = 0;
-    for (int n = 0; n < DDC_NT; n++) {
-        double m = n - (DDC_NT - 1) / 2.0;
-        double fc = 8000.0 / FS_WIDE;
-        double s = m == 0 ? 2 * fc : sin(2 * M_PI * fc * m) / (M_PI * m);
-        h[n] = s * (0.42 - 0.5 * cos(2 * M_PI * n / (DDC_NT - 1)) + 0.08 * cos(4 * M_PI * n / (DDC_NT - 1)));
-        sum += h[n];
+    /* -6 dB at 7.5 kHz, Blackman skirts ~0.7 kHz: flat to ~7.1 kHz, stop from ~7.9 kHz */
+    static float h[2 * FC_NF];
+    memset(h, 0, sizeof(h));
+    double sum = 0, fc = 7500.0 / FS_WIDE;
+    for (int n = 0; n < FC_LP; n++) {
+        double m = n - (FC_LP - 1) / 2.0;
+        double v = m == 0 ? 2 * fc : sin(2 * M_PI * fc * m) / (M_PI * m);
+        v *= 0.42 - 0.5 * cos(2 * M_PI * n / (FC_LP - 1)) + 0.08 * cos(4 * M_PI * n / (FC_LP - 1));
+        h[2 * n] = (float)v;
+        sum += v;
     }
-    for (int n = 0; n < DDC_NT; n++)
-        ddc_taps[n] = (float)(h[n] / sum);
+    for (int n = 0; n < FC_LP; n++)
+        h[2 * n] = (float)(h[2 * n] / sum);
+    fftwf_execute_dft(fc_plan_f, (fftwf_complex *)h, (fftwf_complex *)fc_H);
+    for (int k = 0; k < 2 * FC_NF; k++)
+        fc_H[k] /= FC_NF;
 }
 
-void ddc_init(ddc_t *d)
+void fc_seg_reset(fcseg_t *s)
 {
-    memset(d, 0, sizeof(*d));
-    d->pr = 1;
-    d->dr = 1;
+    memset(s->x, 0, sizeof(s->x));
+    s->fill = FC_NF - FC_HOP;
+    s->ready = 0;
+    s->m = 0;
 }
 
-void ddc_set(ddc_t *d, double offset_hz)
+/* take samples until a window is complete; returns how many were taken */
+int fc_seg_feed(fcseg_t *s, const float *iq, int n)
 {
-    /* multiply by exp(-j 2 pi offset t): the listener frequency lands on 0 Hz */
-    d->dr = (float)cos(-2 * M_PI * offset_hz / FS_WIDE);
-    d->di = (float)sin(-2 * M_PI * offset_hz / FS_WIDE);
-}
-
-static float dot(const float *a, const float *h)
-{
-    float s = 0;
-    for (int k = 0; k < DDC_NT; k++)
-        s += a[k] * h[k];
-    return s;
-}
-
-/* iq: n complex samples at FS_WIDE; out: up to max complex samples at FS_NARROW */
-int ddc_process(ddc_t *d, const float *iq, int n, float *out, int max)
-{
-    int m = 0;
-    float pr = d->pr, pi = d->pi;
-    for (int i = 0; i < n; i++) {
-        if (d->fill == DDC_BUF) {
-            memmove(d->xr, d->xr + DDC_BUF - DDC_NT, DDC_NT * sizeof(float));
-            memmove(d->xi, d->xi + DDC_BUF - DDC_NT, DDC_NT * sizeof(float));
-            d->fill = DDC_NT;
-        }
-        float a = iq[2 * i], b = iq[2 * i + 1];
-        d->xr[d->fill] = a * pr - b * pi;
-        d->xi[d->fill] = a * pi + b * pr;
-        d->fill++;
-        float t = pr * d->dr - pi * d->di;
-        pi = pr * d->di + pi * d->dr;
-        pr = t;
-        if (++d->phase >= DDC_DEC && d->fill >= DDC_NT) {
-            d->phase = 0;
-            if (m < max) {
-                out[2 * m] = dot(d->xr + d->fill - DDC_NT, ddc_taps);
-                out[2 * m + 1] = dot(d->xi + d->fill - DDC_NT, ddc_taps);
-                m++;
-            }
-        }
+    int k = FC_NF - s->fill;
+    if (k > n)
+        k = n;
+    memcpy(s->x + 2 * s->fill, iq, 2 * k * sizeof(float));
+    s->fill += k;
+    if (s->fill == FC_NF) {
+        fftwf_execute_dft(fc_plan_f, (fftwf_complex *)s->x, (fftwf_complex *)s->X);
+        memmove(s->x, s->x + 2 * FC_HOP, 2 * (FC_NF - FC_HOP) * sizeof(float));
+        s->fill = FC_NF - FC_HOP;
+        s->ready = 1;
+        s->m++;
     }
-    float g = 1.0f / sqrtf(pr * pr + pi * pi);
-    d->pr = pr * g;
-    d->pi = pi * g;
-    return m;
+    return k;
+}
+
+void fc_set(fclis_t *l, double offset_hz)
+{
+    const double bin = (double)FS_WIDE / FC_NF;   /* 31.25 Hz */
+    l->kc = (int)lround(offset_hz / bin);
+    double res = offset_hz - l->kc * bin;
+    l->sr = (float)cos(-2 * M_PI * res / FS_NARROW);
+    l->si = (float)sin(-2 * M_PI * res / FS_NARROW);
+    if (l->rr == 0 && l->ri == 0)
+        l->rr = 1;
+}
+
+/* FC_OUT samples at 16 kS/s of the last window, shifted by the listener offset */
+int fc_out(const fcseg_t *s, fclis_t *l, float *out)
+{
+    /* output bin j is input bin kc + j (j < FC_NI/2) or kc + j - FC_NI, low-pass bin j or
+       FC_NF + j - FC_NI; both walk forward with one wrap each */
+    int src = ((l->kc % FC_NF) + FC_NF) % FC_NF, hh = 0;
+    for (int j = 0; j < FC_NI; j++) {
+        if (j == FC_NI / 2) {
+            src = (((l->kc - FC_NI / 2) % FC_NF) + FC_NF) % FC_NF;
+            hh = FC_NF - FC_NI / 2;
+        }
+        float xr = s->X[2 * src], xi = s->X[2 * src + 1];
+        float hr = fc_H[2 * hh], hi = fc_H[2 * hh + 1];
+        l->y[2 * j] = xr * hr - xi * hi;
+        l->y[2 * j + 1] = xr * hi + xi * hr;
+        if (++src == FC_NF) src = 0;
+        if (++hh == FC_NF) hh = 0;
+    }
+    fftwf_execute_dft(fc_plan_i, (fftwf_complex *)l->y, (fftwf_complex *)l->y);
+    /* taking bins around kc mixed every window by kc from the window start; the window
+       start moves FC_HOP samples per window: undo that phase so the mixing is continuous */
+    long long kcm = ((long long)l->kc % FC_NF + FC_NF) % FC_NF;
+    long long ph = (kcm * FC_HOP % FC_NF) * (long long)((s->m - 1) % FC_NF) % FC_NF;
+    float cr = (float)cos(-2 * M_PI * ph / FC_NF), ci = (float)sin(-2 * M_PI * ph / FC_NF);
+    float rr = l->rr, ri = l->ri;
+    for (int p = 0; p < FC_OUT; p++) {
+        float yr = l->y[2 * (FC_NI - FC_OUT + p)], yi = l->y[2 * (FC_NI - FC_OUT + p) + 1];
+        float ar = yr * cr - yi * ci, ai = yr * ci + yi * cr;
+        out[2 * p] = ar * rr - ai * ri;
+        out[2 * p + 1] = ar * ri + ai * rr;
+        float t = rr * l->sr - ri * l->si;
+        ri = rr * l->si + ri * l->sr;
+        rr = t;
+    }
+    float g = 1.0f / sqrtf(rr * rr + ri * ri);
+    l->rr = rr * g;
+    l->ri = ri * g;
+    return FC_OUT;
 }
 
 /* ---------------------------------------------------------------- demodulator */
@@ -285,6 +323,7 @@ static void lowpass(double *h, int N, double fc)
 void demod_init(demod_t *d)
 {
     memset(d, 0, sizeof(*d));
+    d->wfill = CF_N - CF_HOP;
     double h[DM_NA];
     lowpass(h, DM_NA, 3600.0 / FS_NARROW);
     for (int n = 0; n < DM_NA; n++)
@@ -316,20 +355,19 @@ void demod_set(demod_t *d, int mode, float lo, float hi)
     double f0 = (hi + lo) / 2.0 / FS_NARROW;
     int M = nt / 2;
 
-    if (nt != d->nt) {
-        /* other length: start the history afresh */
-        memset(d->xr, 0, sizeof(d->xr));
-        memset(d->xi, 0, sizeof(d->xi));
-        d->hp = 0;
-        d->nt = nt;
-    }
+    d->nt = nt;
     lowpass(h, nt, fc);
-    /* shift the lowpass to the passband centre; store reversed for the dot product */
+    /* shift the lowpass to the passband centre, zero-pad, transform; 1/CF_N for the inverse */
+    static float t[2 * CF_N];
+    memset(t, 0, sizeof(t));
     for (int n = 0; n < nt; n++) {
         int m = n - M;
-        d->tr[nt - 1 - n] = (float)(h[n] * cos(2 * M_PI * f0 * m));
-        d->ti[nt - 1 - n] = (float)(h[n] * sin(2 * M_PI * f0 * m));
+        t[2 * n] = (float)(h[n] * cos(2 * M_PI * f0 * m));
+        t[2 * n + 1] = (float)(h[n] * sin(2 * M_PI * f0 * m));
     }
+    fftwf_execute_dft(cf_plan_f, (fftwf_complex *)t, (fftwf_complex *)d->H);
+    for (int k = 0; k < 2 * CF_N; k++)
+        d->H[k] /= CF_N;
     if (mode != d->mode) {
         d->dc = 0;
         d->peak = 1e-4f;
@@ -345,22 +383,10 @@ float demod_level_db(const demod_t *d)
     return 10.0f * log10f(d->pwr + 1e-20f);
 }
 
-void demod_process(demod_t *d, const float *iq, int n)
+/* one channel-filtered sample: detector, AGC, squelch, 16 -> 8 kS/s */
+static void demod_sample(demod_t *d, float yr, float yi)
 {
-    for (int i = 0; i < n; i++) {
-        /* complex channel filter */
-        const int nt = d->nt;
-        d->xr[d->hp] = d->xr[d->hp + nt] = iq[2 * i];
-        d->xi[d->hp] = d->xi[d->hp + nt] = iq[2 * i + 1];
-        const float *br = &d->xr[d->hp + 1], *bi = &d->xi[d->hp + 1];
-        float yr = 0, yi = 0;
-        for (int k = 0; k < nt; k++) {
-            yr += d->tr[k] * br[k] - d->ti[k] * bi[k];
-            yi += d->tr[k] * bi[k] + d->ti[k] * br[k];
-        }
-        if (++d->hp == nt)
-            d->hp = 0;
-
+    {
         float p = yr * yr + yi * yi;
         d->pwr += (p - d->pwr) * 0.002f;
 
@@ -417,7 +443,7 @@ void demod_process(demod_t *d, const float *iq, int n)
             d->ap = 0;
         d->dec ^= 1;
         if (!d->dec)
-            continue;
+            return;
         float s = 0;
         for (int k = 0; k < DM_NA; k++)
             s += d->ataps[k] * ab[k];
@@ -425,6 +451,37 @@ void demod_process(demod_t *d, const float *iq, int n)
         if (s < -1) s = -1;
         if (d->outn < DM_OUTMAX)
             d->out[d->outn++] = (int16_t)(s * 32767.0f);
+    }
+}
+
+/*
+ * Channel filter by overlap-save: every CF_HOP new samples one forward and one inverse
+ * CF_N-point FFT; the last CF_HOP outputs are valid (filter length <= DM_NT).
+ */
+void demod_process(demod_t *d, const float *iq, int n)
+{
+    int i = 0;
+    while (i < n) {
+        int k = CF_N - d->wfill;
+        if (k > n - i)
+            k = n - i;
+        memcpy(d->win + 2 * d->wfill, iq + 2 * i, 2 * k * sizeof(float));
+        d->wfill += k;
+        i += k;
+        if (d->wfill < CF_N)
+            break;
+        fftwf_execute_dft(cf_plan_f, (fftwf_complex *)d->win, (fftwf_complex *)d->tmp);
+        for (int j = 0; j < CF_N; j++) {
+            float ar = d->tmp[2 * j], ai = d->tmp[2 * j + 1];
+            float hr = d->H[2 * j], hi = d->H[2 * j + 1];
+            d->tmp[2 * j] = ar * hr - ai * hi;
+            d->tmp[2 * j + 1] = ar * hi + ai * hr;
+        }
+        fftwf_execute_dft(cf_plan_i, (fftwf_complex *)d->tmp, (fftwf_complex *)d->tmp2);
+        for (int j = CF_N - CF_HOP; j < CF_N; j++)
+            demod_sample(d, d->tmp2[2 * j], d->tmp2[2 * j + 1]);
+        memmove(d->win, d->win + 2 * CF_HOP, 2 * (CF_N - CF_HOP) * sizeof(float));
+        d->wfill = CF_N - CF_HOP;
     }
 }
 
