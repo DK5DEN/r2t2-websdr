@@ -132,3 +132,13 @@ table.data.sdr-kompakt .btn-stift, table.data.sdr-kompakt .btn-weg { width: 1.6r
 .sdr-aktiv-bereich { fill: color-mix(in srgb, var(--ok, #22c55e) 55%, transparent); }
 .note.sdr-belegt { display: flex; flex-wrap: wrap; align-items: center; gap: 0.4rem; margin: 0.6rem 0 0; }
 .note.sdr-belegt[hidden] { display: none; }
+
+/* zoom: buttons side by side, waterfall takes horizontal drags and pinches itself */
+.sdr-zoom { display: flex; gap: 0.4rem; }
+.sdr-zoom .btn-sm { flex: 1; }
+.rm-wf .rm-spektrum, .sdr-wf-flaeche .rm-wasserfall { touch-action: pan-y; }
+
+/* who is online, above the chat */
+.sdr-online { margin: 0; font-size: 0.85rem; color: var(--muted); line-height: 1.4; }
+.sdr-online strong { color: var(--fg); font-weight: 600; }
+.sdr-abschnitt { margin: 1.6rem 0 0.4rem; font-size: 1rem; }

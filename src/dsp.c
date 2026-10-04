@@ -66,20 +66,49 @@ void wf_reset(wf_t *w)
     memset(w->acc, 0, sizeof(w->acc));
 }
 
-/* One byte per bin: dBFS + 170, max-pooled from WF_FFT to WF_BINS, DC in the middle. */
+static uint8_t wf_byte(float p)
+{
+    int v = (int)lrintf(10.0f * log10f(p + 1e-20f) + 170.0f);
+    return v < 0 ? 0 : v > 255 ? 255 : (uint8_t)v;
+}
+
+/* One byte per bin: dBFS + 170, max-pooled from WF_FFT to WF_BINS, DC in the middle.
+   The full-resolution line stays in spec for zoomed viewers. */
 static void wf_frame(wf_t *w, uint8_t *frame)
 {
     const int r = WF_FFT / WF_BINS;
     const float scale = wf_norm / w->navg;
+    for (int k = 0; k < WF_FFT; k++)
+        w->spec[k] = w->acc[(k + WF_FFT / 2) & (WF_FFT - 1)] * scale;
     for (int b = 0; b < WF_BINS; b++) {
         float m = 0;
-        for (int j = 0; j < r; j++) {
-            int src = (b * r + j + WF_FFT / 2) & (WF_FFT - 1);
-            if (w->acc[src] > m)
-                m = w->acc[src];
-        }
-        int v = (int)lrintf(10.0f * log10f(m * scale + 1e-20f) + 170.0f);
-        frame[b] = v < 0 ? 0 : v > 255 ? 255 : (uint8_t)v;
+        for (int j = 0; j < r; j++)
+            if (w->spec[b * r + j] > m)
+                m = w->spec[b * r + j];
+        frame[b] = wf_byte(m);
+    }
+}
+
+/*
+ * Zoomed line: n points df Hz apart, the first at rel0 Hz from the receiver
+ * centre; each point is the maximum of the FFT bins it covers (or the one bin
+ * it falls in when zoomed in beyond the FFT resolution of ~47 Hz).
+ */
+void wf_zoom(const wf_t *w, double rel0, double df, int n, uint8_t *out)
+{
+    const double bpf = (double)WF_FFT / FS_WIDE;   /* bins per Hz */
+    for (int i = 0; i < n; i++) {
+        double c = (rel0 + i * df) * bpf + WF_FFT / 2;
+        int b0 = (int)floor(c - df * bpf / 2), b1 = (int)floor(c + df * bpf / 2);
+        if (b1 < b0)
+            b1 = b0;
+        if (b0 < 0) b0 = 0;
+        if (b1 > WF_FFT - 1) b1 = WF_FFT - 1;
+        float m = 0;
+        for (int k = b0; k <= b1; k++)
+            if (w->spec[k] > m)
+                m = w->spec[k];
+        out[i] = wf_byte(m);
     }
 }
 

@@ -161,6 +161,7 @@ static int load_file(config_t *c, const char *path, int station_only)
         else if (!strcmp(k, "state_dir"))      copy(c->state_dir, sizeof(c->state_dir), v);
         else if (!strcmp(k, "access"))         c->access = !strcmp(v, "login");
         else if (!strcmp(k, "chat"))           c->chat = !strcmp(v, "off") ? 0 : !strcmp(v, "login") ? 1 : 2;
+        else if (!strcmp(k, "log"))            c->log = !strcmp(v, "on");
         else if (!strcmp(k, "www"))            copy(c->www, sizeof(c->www), v);
         else if (!strcmp(k, "interface"))      copy(c->ifname, sizeof(c->ifname), v);
         else if (!strcmp(k, "title"))          copy(c->title, sizeof(c->title), v);
@@ -217,6 +218,7 @@ int config_save_station(const config_t *c)
             c->title, c->callsign, c->location, c->locator, c->access ? "login" : "open",
             c->chat == 0 ? "off" : c->chat == 1 ? "login" : "all");
     fprintf(f, "gain1 = %d\ngain2 = %d\natt1 = %d\natt2 = %d\n", c->gain[0], c->gain[1], c->att[0], c->att[1]);
+    fprintf(f, "log = %s\n", c->log ? "on" : "off");
     int ok = fclose(f) == 0;
     if (!ok || rename(tmp, path) < 0) {
         unlink(tmp);

@@ -19,6 +19,7 @@ typedef struct {
     float acc[WF_FFT];
     int fill, nacc, navg;
     int pos, period;   /* sample position within one line period */
+    float spec[WF_FFT];  /* last line, power per FFT bin, lowest frequency first (for zoom) */
 } wf_t;
 
 typedef struct {
@@ -66,6 +67,7 @@ int ddc_process(ddc_t *d, const float *iq, int n, float *out, int max);
 int wf_init(wf_t *w, int navg);
 void wf_reset(wf_t *w);
 int wf_push(wf_t *w, const float *iq, int n, uint8_t *frame);
+void wf_zoom(const wf_t *w, double rel0, double df, int n, uint8_t *out);
 
 void demod_init(demod_t *d);
 void demod_set(demod_t *d, int mode, float lo, float hi);

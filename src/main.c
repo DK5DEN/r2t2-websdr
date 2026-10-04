@@ -25,6 +25,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
+#include <sys/stat.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -117,6 +118,44 @@ static void logmsg(const char *fmt, ...)
     vfprintf(stderr, fmt, ap);
     va_end(ap);
     fputc('\n', stderr);
+}
+
+/*
+ * Activity log (Verwaltung > Online, switched on there): one line per event,
+ * "YYYY-MM-DD HH:MM:SS<TAB>who<TAB>address<TAB>event", UTC, in
+ * state_dir/activity.log; at 1 MB it becomes activity.log.1.
+ */
+#define ACT_LOG_MAX (1 << 20)
+
+static void act_path(char *p, size_t n, int old)
+{
+    snprintf(p, n, "%s/activity.log%s", cfg.state_dir, old ? ".1" : "");
+}
+
+static void act_log(const client_t *c, const char *fmt, ...)
+{
+    if (!cfg.log)
+        return;
+    char path[300], ev[300], when[32];
+    act_path(path, sizeof(path), 0);
+    struct stat sb;
+    if (stat(path, &sb) == 0 && sb.st_size > ACT_LOG_MAX) {
+        char old[300];
+        act_path(old, sizeof(old), 1);
+        rename(path, old);
+    }
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(ev, sizeof(ev), fmt, ap);
+    va_end(ap);
+    time_t t = time(NULL);
+    strftime(when, sizeof(when), "%Y-%m-%d %H:%M:%S", gmtime(&t));
+    FILE *f = fopen(path, "a");
+    if (!f)
+        return;
+    const char *who = !c ? "" : c->user[0] ? c->user : c->gname[0] ? c->gname : "Gast";
+    fprintf(f, "%s\t%s%s\t%s\t%s\n", when, who, c && !c->user[0] && c->gname[0] ? " (Gast)" : "", c ? c->ip : "", ev);
+    fclose(f);
 }
 
 static long now_s(void)
@@ -265,6 +304,12 @@ static const char *mode_name(int m)
     return (m >= 0 && m <= M_FM) ? n[m] : "usb";
 }
 
+static const char *mode_upper(int m)
+{
+    static const char *n[] = { "USB", "LSB", "CW", "AM", "FM" };
+    return m >= 0 && m <= M_FM ? n[m] : "?";
+}
+
 static int mode_parse(const char *s)
 {
     if (!strcmp(s, "nfm"))
@@ -299,7 +344,30 @@ static int status_json(char *b, size_t n)
 {
     int listeners, users = count_users(&listeners);
     int o = snprintf(b, n, "{\"type\":\"status\",\"users\":%d,\"listeners\":%d,\"free\":%d,\"total\":%d,"
-                     "\"active\":[", users, listeners, rx_free_count(), NRX);
+                     "\"names\":[", users, listeners, rx_free_count(), NRX);
+    /* who is online, for everybody: accounts and guests who gave a chat name once each, other guests counted */
+    int guests = 0, nn = 0;
+    for (int i = 0; i < MAX_CLIENTS && o < (int)n - 400; i++) {
+        const client_t *k = &cl[i];
+        if (k->fd < 0 || !k->ws)
+            continue;
+        const char *nm = k->user[0] ? k->user : k->gname;
+        if (!nm[0]) {
+            guests++;
+            continue;
+        }
+        int dup = 0;
+        for (int j = 0; j < i && !dup; j++)
+            dup = cl[j].fd >= 0 && cl[j].ws && !strcmp(cl[j].user[0] ? cl[j].user : cl[j].gname, nm)
+                  && !cl[j].user[0] == !k->user[0];
+        if (dup)
+            continue;
+        char e[80];
+        json_escape(e, sizeof(e), nm);
+        o += snprintf(b + o, n - o, "%s{\"name\":\"%s\",\"guest\":%s}", nn++ ? "," : "", e,
+                      k->user[0] ? "false" : "true");
+    }
+    o += snprintf(b + o, n - o, "],\"guests\":%d,\"active\":[", guests);
     int first = 1;
     for (int i = 0; i < nviews && o < (int)n - 120; i++) {
         const view_t *v = &views[i];
@@ -318,7 +386,7 @@ static int status_json(char *b, size_t n)
 
 static void broadcast_status(void)
 {
-    static char b[2048];
+    static char b[4096];
     status_json(b, sizeof(b));
     for (int i = 0; i < MAX_CLIENTS; i++)
         if (cl[i].fd >= 0 && cl[i].ws)
@@ -527,8 +595,10 @@ static void view_release(int id, const char *why)
             continue;
         if (c->view == id) {
             c->view = -1;
-            if (why && c->ws)
+            if (why && c->ws) {
                 send_noview(c, why);
+                act_log(c, "Wasserfall verdrängt");
+            }
         }
         if (c->dview == id) {
             c->dview = c->dseg = -1;
@@ -627,6 +697,7 @@ static int rx_take(int prio)
                                 : "Der Empfänger wurde für einen angemeldeten Nutzer freigegeben.";
     if (vrx >= 0 && rx_client[vrx] >= 0) {
         client_t *c = &cl[rx_client[vrx]];
+        act_log(c, "eigener Empfänger verdrängt (%.4f MHz)", c->freq / 1e6);
         listener_stop(c);
         send_error(c, why);
         send_audio_state(c);
@@ -693,6 +764,10 @@ static void view_join(client_t *c, int id)
         v->viewers++;
         c->view = id;
         reroute_all();
+        if (v->band >= 0)
+            act_log(c, "Wasserfall %s", cfg.bands[v->band].name);
+        else
+            act_log(c, "Wasserfall %.3f MHz", v->center / 1e6);
     }
     send_view(c);
     broadcast_status();
@@ -942,6 +1017,9 @@ static void listener_start(client_t *c)
     listener_route(c, 1);
     if (!c->listening)
         return;
+    act_log(c, "hört %.4f MHz %s%s", c->freq / 1e6, mode_upper(c->mode), c->rx >= 0 ? " (eigener Empfänger)" : "");
+    c->log_freq = c->freq;
+    c->log_t = now_s();
     send_audio_state(c);
     broadcast_status();
 }
@@ -979,12 +1057,14 @@ static void send_login(client_t *c, const char *token)
     char m[300], u[64];
     if (!c->role) {
         send_text(c, "{\"type\":\"logout\"}");
+        broadcast_status();
         return;
     }
     json_escape(u, sizeof(u), c->user);
     snprintf(m, sizeof(m), "{\"type\":\"login\",\"user\":\"%s\",\"role\":\"%s\"%s%s%s}",
              u, role_name(c->role), token ? ",\"token\":\"" : "", token ? token : "", token ? "\"" : "");
     send_text(c, m);
+    broadcast_status();
 }
 
 /* the role of an account changed or it was deleted: update its open connections */
@@ -1030,6 +1110,108 @@ static void send_users(client_t *c)
             online += cl[k].fd >= 0 && cl[k].ws && !strcasecmp(cl[k].user, u->name);
         o += snprintf(b + o, sizeof(b) - o, "%s{\"name\":\"%s\",\"role\":\"%s\",\"online\":%d}",
                       i ? "," : "", u->name, role_name(u->role), online);
+    }
+    snprintf(b + o, sizeof(b) - o, "]}");
+    send_text(c, b);
+}
+
+/* newest ACT_SEND lines of the activity log, newest first */
+#define ACT_SEND 500
+static void send_act_log(client_t *c)
+{
+    static char raw[96 << 10], b[160 << 10];
+    /* the end of activity.log, and if that is short the end of activity.log.1 before it */
+    char p0[300], p1[300];
+    act_path(p0, sizeof(p0), 0);
+    act_path(p1, sizeof(p1), 1);
+    struct stat s0, s1;
+    long sz0 = stat(p0, &s0) == 0 ? (long)s0.st_size : 0, sz1 = stat(p1, &s1) == 0 ? (long)s1.st_size : 0;
+    long cap = (long)sizeof(raw) - 1;
+    long take0 = sz0 < cap ? sz0 : cap, take1 = sz1 < cap - take0 ? sz1 : cap - take0;
+    int cut = take0 < sz0 || take1 < sz1;   /* first line in the window may be partial */
+    size_t len = 0;
+    const char *paths[2] = { p1, p0 };
+    long sizes[2] = { sz1, sz0 }, takes[2] = { take1, take0 };
+    for (int k = 0; k < 2; k++) {
+        if (!takes[k])
+            continue;
+        FILE *f = fopen(paths[k], "r");
+        if (!f)
+            continue;
+        fseek(f, sizes[k] - takes[k], SEEK_SET);
+        len += fread(raw + len, 1, (size_t)takes[k], f);
+        fclose(f);
+    }
+    raw[len] = 0;
+    int o = snprintf(b, sizeof(b), "{\"type\":\"log\",\"on\":%s,\"lines\":[", cfg.log ? "true" : "false");
+    int count = 0;
+    char *end = raw + len;
+    while (end > raw && count < ACT_SEND && o < (int)sizeof(b) - 1200) {
+        char *e = end;
+        if (e > raw && e[-1] == '\n')
+            e--;
+        char *s = e;
+        while (s > raw && s[-1] != '\n')
+            s--;
+        end = s;
+        if (s == e)
+            continue;
+        if (s == raw && cut)
+            break; /* partial line at the start of the window */
+        char line[600];
+        size_t ln = (size_t)(e - s) < sizeof(line) - 1 ? (size_t)(e - s) : sizeof(line) - 1;
+        memcpy(line, s, ln);
+        line[ln] = 0;
+        char *f[4] = { line, "", "", "" };
+        for (int k = 1; k < 4; k++) {
+            char *t = strchr(f[k - 1], '\t');
+            if (!t)
+                break;
+            *t = 0;
+            f[k] = t + 1;
+        }
+        char e0[40], e1[100], e2[100], e3[700];
+        json_escape(e0, sizeof(e0), f[0]);
+        json_escape(e1, sizeof(e1), f[1]);
+        json_escape(e2, sizeof(e2), f[2]);
+        json_escape(e3, sizeof(e3), f[3]);
+        o += snprintf(b + o, sizeof(b) - o, "%s[\"%s\",\"%s\",\"%s\",\"%s\"]", count++ ? "," : "", e0, e1, e2, e3);
+    }
+    snprintf(b + o, sizeof(b) - o, "]}");
+    send_text(c, b);
+}
+
+/* who is connected and what they do, for admins */
+static void send_online(client_t *c)
+{
+    static char b[16384];
+    long now = now_s();
+    int o = snprintf(b, sizeof(b), "{\"type\":\"online\",\"list\":[");
+    int first = 1;
+    for (int i = 0; i < MAX_CLIENTS && o < (int)sizeof(b) - 600; i++) {
+        const client_t *k = &cl[i];
+        if (k->fd < 0 || !k->ws)
+            continue;
+        char user[64], gname[64], ip[64], view[96] = "";
+        json_escape(user, sizeof(user), k->user);
+        json_escape(gname, sizeof(gname), k->gname);
+        json_escape(ip, sizeof(ip), k->ip);
+        if (k->view >= 0) {
+            const view_t *v = &views[k->view];
+            if (v->band >= 0)
+                json_escape(view, sizeof(view), cfg.bands[v->band].name);
+            else
+                snprintf(view, sizeof(view), "%.3f-%.3f MHz", v->show_lo / 1e6, v->show_hi / 1e6);
+        }
+        o += snprintf(b + o, sizeof(b) - o,
+                      "%s{\"slot\":%d,\"user\":\"%s\",\"role\":\"%s\",\"guest\":\"%s\",\"ip\":\"%s\","
+                      "\"since\":%ld,\"idle\":%ld,\"view\":\"%s\",\"segments\":%d,\"zoom\":%s,"
+                      "\"listening\":%s,\"freq\":%.0f,\"mode\":\"%s\",\"own\":%s,\"self\":%s}",
+                      first ? "" : ",", i, user, k->user[0] ? role_name(k->role) : "", gname, ip,
+                      now - k->since, now - k->last_act, view, k->view >= 0 ? views[k->view].nseg : 0,
+                      k->zhi > k->zlo ? "true" : "false", k->listening ? "true" : "false", k->freq,
+                      mode_name(k->mode), k->rx >= 0 ? "true" : "false", k == c ? "true" : "false");
+        first = 0;
     }
     snprintf(b + o, sizeof(b) - o, "]}");
     send_text(c, b);
@@ -1153,6 +1335,7 @@ static int account_cmd(client_t *c, const char *cmd, const char *txt)
             return 1;
         }
         logmsg("login %s (%s) from %s", c->user, role_name(c->role), c->ip);
+        act_log(c, "angemeldet (%s)", role_name(c->role));
         send_login(c, token);
         return 1;
     }
@@ -1161,6 +1344,8 @@ static int account_cmd(client_t *c, const char *cmd, const char *txt)
         if (json_str(txt, "token", token, sizeof(token)) &&
             auth_session_get(token, name, sizeof(name)) == 0) {
             const user_t *u = auth_user_find(name);
+            if (strcasecmp(c->user, u->name))
+                act_log(c, "angemeldet als %s (gespeicherte Sitzung)", u->name);
             snprintf(c->user, sizeof(c->user), "%s", u->name);
             c->role = u->role;
         } else {
@@ -1174,6 +1359,7 @@ static int account_cmd(client_t *c, const char *cmd, const char *txt)
         char token[80];
         if (json_str(txt, "token", token, sizeof(token)))
             auth_session_drop(token);
+        act_log(c, "abgemeldet");
         c->user[0] = 0;
         c->role = ROLE_NONE;
         if (cfg.access && c->listening) {
@@ -1302,6 +1488,40 @@ static int account_cmd(client_t *c, const char *cmd, const char *txt)
     if (!strcmp(cmd, "users")) {
         if (require(c, ROLE_ADMIN))
             send_users(c);
+        return 1;
+    }
+    if (!strcmp(cmd, "online")) {
+        if (require(c, ROLE_ADMIN))
+            send_online(c);
+        return 1;
+    }
+    if (!strcmp(cmd, "log")) {
+        if (require(c, ROLE_ADMIN))
+            send_act_log(c);
+        return 1;
+    }
+    if (!strcmp(cmd, "log_set")) {
+        char on[8];
+        if (!require(c, ROLE_ADMIN))
+            return 1;
+        if (json_str(txt, "on", on, sizeof(on))) {
+            int was = cfg.log;
+            if (was && strcmp(on, "on"))
+                act_log(c, "Protokoll ausgeschaltet");
+            cfg.log = !strcmp(on, "on");
+            if (!was && cfg.log)
+                act_log(c, "Protokoll eingeschaltet");
+            config_save_station(&cfg);
+        }
+        if (json_str(txt, "clear", on, sizeof(on)) && !strcmp(on, "yes")) {
+            char p[300];
+            act_path(p, sizeof(p), 0);
+            unlink(p);
+            act_path(p, sizeof(p), 1);
+            unlink(p);
+            act_log(c, "Protokoll gelöscht");
+        }
+        send_act_log(c);
         return 1;
     }
     if (!strcmp(cmd, "user_set")) {
@@ -1493,6 +1713,11 @@ static void chat_cmd(client_t *c, const char *txt)
         name[24] = 0;
         utf8_trim(name);
         snprintf(m->who, sizeof(m->who), "%s", name);
+        if (strcmp(c->gname, name)) {
+            act_log(c, "nennt sich im Chat \"%s\"", name);
+            snprintf(c->gname, sizeof(c->gname), "%s", name);
+            broadcast_status();
+        }
         m->guest = 1;
     }
     time_t wall = time(NULL);
@@ -1511,6 +1736,7 @@ static void chat_cmd(client_t *c, const char *txt)
 static void on_open(client_t *c)
 {
     c->last_act = now_s();
+    c->since = c->last_act;
     c->view = -1;
     c->rx = -1;
     c->dview = c->dseg = -1;
@@ -1521,6 +1747,7 @@ static void on_open(client_t *c)
     c->hi = -300;
     c->sql = -999;
     logmsg("client %s connected", c->ip);
+    act_log(c, "verbunden");
     static char b[8192];
     config_json(b, sizeof(b));
     send_text(c, b);
@@ -1572,12 +1799,28 @@ static void on_text(client_t *c, char *txt, size_t len)
         }
         c->freq = f;
         apply_tune(c);
+        if (c->listening && fabs(c->freq - c->log_freq) >= 3000 && now_s() - c->log_t >= 15) {
+            act_log(c, "hört %.4f MHz %s", c->freq / 1e6, mode_upper(c->mode));
+            c->log_freq = c->freq;
+            c->log_t = now_s();
+        }
     } else if (!strcmp(cmd, "start")) {
         listener_start(c);
     } else if (!strcmp(cmd, "stop")) {
+        if (c->listening)
+            act_log(c, "hört nicht mehr: %.4f MHz %s", c->freq / 1e6, mode_upper(c->mode));
         listener_stop(c);
         send_audio_state(c);
         broadcast_status();
+    } else if (!strcmp(cmd, "zoom")) {
+        /* the part of the view this client shows; without lo/hi the whole view */
+        double lo, hi;
+        if (json_num(txt, "lo", &lo) && json_num(txt, "hi", &hi) && hi - lo >= 2000 && lo > 0) {
+            c->zlo = lo;
+            c->zhi = hi;
+        } else {
+            c->zlo = c->zhi = 0;
+        }
     } else if (!strcmp(cmd, "squelch")) {
         if (json_num(txt, "level", &v)) {
             c->sql = (float)v;
@@ -1613,8 +1856,13 @@ static void client_close(client_t *c)
         return;
     dsp_lock();
     int was_ws = c->ws;
-    if (was_ws)
+    if (was_ws) {
         logmsg("client %s disconnected", c->ip);
+        long d = now_s() - c->since;
+        if (c->listening)
+            act_log(c, "hört nicht mehr: %.4f MHz %s", c->freq / 1e6, mode_upper(c->mode));
+        act_log(c, "getrennt nach %ld min %ld s", d / 60, d % 60);
+    }
     view_leave(c);
     listener_stop(c);
     close(c->fd);
@@ -1645,6 +1893,7 @@ static void on_packet(const uint8_t *buf, int len)
 {
     static float iq[NRX][2 * 128];
     static uint8_t frame[3 + WF_BINS];
+    static uint8_t zf[7 + ZOOM_ROW];
     static uint8_t apkt[8 + AUDIO_BLOCK];
 
     if (len <= 16)
@@ -1682,9 +1931,39 @@ static void on_packet(const uint8_t *buf, int len)
                 frame[0] = 1;
                 frame[1] = (uint8_t)v;
                 frame[2] = (uint8_t)sg;
-                for (int i = 0; i < MAX_CLIENTS; i++)
-                    if (cl[i].fd >= 0 && cl[i].ws && cl[i].view == v)
-                        net_ws_send(&cl[i], 2, frame, sizeof(frame), 1);
+                const view_t *vw = &views[v];
+                double half = (vw->show_hi - vw->show_lo) / vw->nseg / 2;
+                double slo = vw->seg_center[sg] - half, shi = vw->seg_center[sg] + half;
+                for (int i = 0; i < MAX_CLIENTS; i++) {
+                    client_t *c = &cl[i];
+                    if (c->fd < 0 || !c->ws || c->view != v)
+                        continue;
+                    if (c->zhi <= c->zlo) {
+                        net_ws_send(c, 2, frame, sizeof(frame), 1);
+                        continue;
+                    }
+                    /* zoomed: 3, view, segment, x0:uint16, n:uint16, n points of a
+                       ZOOM_ROW line over [zlo, zhi] taken from this segment */
+                    double df = (c->zhi - c->zlo) / ZOOM_ROW;
+                    double a = slo > c->zlo ? slo : c->zlo, b = shi < c->zhi ? shi : c->zhi;
+                    if (b <= a)
+                        continue;
+                    int x0 = (int)ceil((a - c->zlo) / df - 0.5), x1 = (int)floor((b - c->zlo) / df - 0.5) + 1;
+                    if (x0 < 0) x0 = 0;
+                    if (x1 > ZOOM_ROW) x1 = ZOOM_ROW;
+                    int n = x1 - x0;
+                    if (n <= 0)
+                        continue;
+                    wf_zoom(&vw->wf[sg], c->zlo + (x0 + 0.5) * df - vw->seg_center[sg], df, n, zf + 7);
+                    zf[0] = 3;
+                    zf[1] = (uint8_t)v;
+                    zf[2] = (uint8_t)sg;
+                    zf[3] = (uint8_t)(x0 >> 8);
+                    zf[4] = (uint8_t)x0;
+                    zf[5] = (uint8_t)(n >> 8);
+                    zf[6] = (uint8_t)n;
+                    net_ws_send(c, 2, zf, 7 + n, 1);
+                }
             }
             /* listeners cut out of this segment's wide stream: to their listener thread */
             int want[NWORK] = { 0 };

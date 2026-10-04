@@ -6,9 +6,9 @@
 <title>R2T2 WebSDR</title>
 <meta name="color-scheme" content="dark light">
 <link rel="icon" href="icon.svg" type="image/svg+xml">
-<link rel="stylesheet" href="afu-style.css?v=20261004h">
-<link rel="stylesheet" href="remote.css?v=20261004h">
-<link rel="stylesheet" href="sdr.css?v=20261004h">
+<link rel="stylesheet" href="afu-style.css?v=20261004p">
+<link rel="stylesheet" href="remote.css?v=20261004p">
+<link rel="stylesheet" href="sdr.css?v=20261004p">
 <script>
   /* light/dark choice before the first paint, same key as afu.tools */
   try { var t = localStorage.getItem('afu.tools:theme'); if (t === 'light' || t === 'dark') document.documentElement.dataset.theme = t; } catch (e) {}
@@ -156,6 +156,15 @@
         <input type="range" id="wfmax" min="0" max="255" value="120">
       </div>
       <button type="button" class="btn-sm" id="auto">Kontrast automatisch</button>
+      <div class="field">
+        <label for="zoom-ein">Zoom <span class="einheit" id="zoom-wert">1×</span></label>
+        <div class="feld-zeile sdr-zoom">
+          <button type="button" class="btn-sm" id="zoom-aus" title="Herauszoomen" aria-label="Herauszoomen">−</button>
+          <button type="button" class="btn-sm" id="zoom-ganz" title="Ganzen Wasserfall zeigen">ganz</button>
+          <button type="button" class="btn-sm" id="zoom-ein" title="Hineinzoomen" aria-label="Hineinzoomen">＋</button>
+        </div>
+        <p class="field-hint">Mausrad zoomt, Ziehen verschiebt, Doppelklick zeigt alles. Umschalt+Mausrad stimmt ab.</p>
+      </div>
     </aside>
   </div>
 
@@ -222,6 +231,7 @@
       <div class="rm-kasten-kopf"><span id="chat-titel">Chat</span></div>
       <div class="rm-kasten-inhalt">
         <p class="field-hint" id="chat-hinweis">Mit allen, die gerade zuhören. Die letzten 30 Nachrichten sieht, wer dazukommt; gespeichert wird nichts.</p>
+        <p class="sdr-online" id="chat-online"></p>
         <div class="rm-chat-liste" id="chat-liste" aria-live="polite"></div>
         <div class="field" id="chat-name-feld">
           <label for="chat-name">Dein Name oder Rufzeichen</label>
@@ -296,6 +306,7 @@
   <div class="rm-tabs" role="tablist" id="tabs">
     <button type="button" class="rm-tab" role="tab" data-tab="lz" data-rolle="lesezeichen">Lesezeichen</button>
     <button type="button" class="rm-tab" role="tab" data-tab="ant" data-rolle="admin">Antennen</button>
+    <button type="button" class="rm-tab" role="tab" data-tab="online" data-rolle="admin">Online</button>
     <button type="button" class="rm-tab" role="tab" data-tab="nutzer" data-rolle="admin">Benutzer</button>
     <button type="button" class="rm-tab" role="tab" data-tab="station" data-rolle="admin">Station</button>
     <button type="button" class="rm-tab" role="tab" data-tab="konto" data-rolle="nutzer">Konto</button>
@@ -365,6 +376,111 @@
   <section class="rm-tab-seite" role="tabpanel" data-seite="ant">
     <p class="field-hint">Für jede Frequenz nimmt der Empfänger den ersten Eingang, dessen Bereiche sie abdecken, sonst den Eingang für alle übrigen Frequenzen. Verstärkung und Abschwächer gelten für den ganzen Eingang.</p>
     <div class="sdr-antennen" id="ant-liste"></div>
+  </section>
+
+  <section class="rm-tab-seite" role="tabpanel" data-seite="online">
+    <p class="field-hint">Alle offenen Verbindungen, alle 3 Sekunden neu. Hören kostet nur mit „eigener RX“ einen Empfänger. „Inaktiv“: seit dem letzten Bedienschritt; bei vollen Empfängern wird der am längsten Inaktive zuerst verdrängt, Gäste vor Angemeldeten.</p>
+    <div class="filters flach nur-schmal">
+      <div class="field grow nur-schmal" id="heim-onq">
+        <label for="onq">Suche</label>
+        <input id="onq" placeholder="Name oder IP" autocomplete="off">
+      </div>
+      <div class="field nur-schmal" id="heim-onart">
+        <label for="onart">Wer</label>
+        <select id="onart">
+          <option value="">alle</option>
+          <option value="konto">angemeldet</option>
+          <option value="gast">Gäste</option>
+          <option value="hoert">hören</option>
+        </select>
+      </div>
+    </div>
+    <p class="count-line" id="online-zahl"></p>
+    <div class="data-wrap">
+      <table class="data" id="online-tabelle">
+        <thead>
+          <tr>
+            <th data-sort="name"><button type="button">Wer<span class="pfeil" aria-hidden="true"></span></button></th>
+            <th data-sort="ip"><button type="button">Adresse<span class="pfeil" aria-hidden="true"></span></button></th>
+            <th data-sort="view"><button type="button">Wasserfall<span class="pfeil" aria-hidden="true"></span></button></th>
+            <th data-sort="freq"><button type="button">Hört (MHz)<span class="pfeil" aria-hidden="true"></span></button></th>
+            <th data-sort="since" class="num"><button type="button">Online<span class="pfeil" aria-hidden="true"></span></button></th>
+            <th data-sort="idle" class="num"><button type="button">Inaktiv<span class="pfeil" aria-hidden="true"></span></button></th>
+          </tr>
+          <tr class="filterzeile">
+            <th data-filter="onq"></th>
+            <th></th>
+            <th></th>
+            <th data-filter="onart"></th>
+            <th></th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody id="online-liste"></tbody>
+      </table>
+    </div>
+    <div class="tabellen-fuss" id="online-fuss">
+      <p class="fuss-info"></p>
+      <nav class="seiten-nav" aria-label="Seitenwahl"></nav>
+      <label class="fuss-menge">Einträge
+        <select>
+          <option value="10">10</option>
+          <option value="25">25</option>
+          <option value="50">50</option>
+          <option value="100">100</option>
+          <option value="alle">alle</option>
+        </select>
+      </label>
+    </div>
+
+    <h3 class="sdr-abschnitt">Protokoll</h3>
+    <p class="btn-row">
+      <label class="rm-schalter"><input type="checkbox" id="log-an"> Protokoll aufzeichnen</label>
+      <button type="button" class="btn-sm btn-weg mit-wort" id="log-weg" title="Protokoll löschen"><span>Protokoll löschen</span></button>
+    </p>
+    <p class="field-hint">Speichert Verbinden und Trennen, An- und Abmelden, Hören (mit Frequenz), Wasserfallwechsel und Verdrängungen mit Name und Adresse auf dem Gerät (<code>activity.log</code>, ab 1 MB eine Generation zurück). Nur einschalten, solange es gebraucht wird.</p>
+    <p class="sdr-leer" id="log-leer">Keine Einträge.</p>
+    <div id="log-teil">
+      <div class="filters flach nur-schmal">
+        <div class="field grow nur-schmal" id="heim-logq">
+          <label for="logq">Suche</label>
+          <input id="logq" placeholder="Name, Adresse oder Ereignis" autocomplete="off">
+        </div>
+      </div>
+      <p class="count-line" id="log-zahl"></p>
+      <div class="data-wrap">
+        <table class="data" id="log-tabelle">
+          <thead>
+            <tr>
+              <th data-sort="t"><button type="button">Zeit (UTC)<span class="pfeil" aria-hidden="true"></span></button></th>
+              <th data-sort="who"><button type="button">Wer<span class="pfeil" aria-hidden="true"></span></button></th>
+              <th data-sort="ip"><button type="button">Adresse<span class="pfeil" aria-hidden="true"></span></button></th>
+              <th data-sort="ev"><button type="button">Ereignis<span class="pfeil" aria-hidden="true"></span></button></th>
+            </tr>
+            <tr class="filterzeile">
+              <th></th>
+              <th></th>
+              <th></th>
+              <th data-filter="logq"></th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+      <div class="tabellen-fuss" id="log-fuss">
+        <p class="fuss-info"></p>
+        <nav class="seiten-nav" aria-label="Seitenwahl"></nav>
+        <label class="fuss-menge">Einträge
+          <select>
+            <option value="10">10</option>
+            <option value="25">25</option>
+            <option value="50">50</option>
+            <option value="100">100</option>
+            <option value="alle">alle</option>
+          </select>
+        </label>
+      </div>
+    </div>
   </section>
 
   <section class="rm-tab-seite" role="tabpanel" data-seite="nutzer">
@@ -617,8 +733,8 @@
 </dialog>
 
 <div class="rm-toasts" id="toasts" role="status" aria-live="polite"></div>
-<script src="kdf.js?v=20261004h"></script>
-<script src="afu-tabelle.js?v=20261004h"></script>
-<script src="app.js?v=20261004h"></script>
+<script src="kdf.js?v=20261004p"></script>
+<script src="afu-tabelle.js?v=20261004p"></script>
+<script src="app.js?v=20261004p"></script>
 </body>
 </html>

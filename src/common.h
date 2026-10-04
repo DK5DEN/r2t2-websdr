@@ -6,6 +6,7 @@
 #define FS_WIDE      192000   /* per-receiver rate of the wide (waterfall) stream */
 #define WF_FFT       4096     /* waterfall FFT size */
 #define WF_BINS      1024     /* bins sent to the browser per waterfall line */
+#define ZOOM_ROW     2048     /* points of a zoomed waterfall line (whole shown range) */
 #define AUDIO_RATE   8000     /* audio rate sent to the browser */
 #define AUDIO_BLOCK  256      /* audio samples per websocket packet */
 #define CW_PITCH     700.0    /* CW beat note in Hz */

@@ -28,6 +28,7 @@ typedef struct {
     char state_dir[256];  /* accounts, sessions, bookmarks, station settings */
     int access;           /* 0 = everyone may listen, 1 = only logged-in users */
     int chat;             /* 0 = off, 1 = logged-in users, 2 = everyone */
+    int log;              /* activity log in state_dir/activity.log, 0 = off */
     band_cfg_t bands[MAX_BANDS];
     int nbands;
 } config_t;

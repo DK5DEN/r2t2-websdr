@@ -24,6 +24,10 @@ typedef struct client {
     unsigned dropped;
     long last_rx;      /* monotonic seconds of the last received data */
     long last_act;     /* monotonic seconds of the last command other than ping */
+    long since;        /* monotonic seconds when the WebSocket opened */
+    char gname[32];    /* name a guest gave in the chat */
+    double log_freq;   /* activity log: last logged listening frequency ... */
+    long log_t;        /* ... and when */
 
     /* application state */
     char user[32];     /* logged-in account, "" = anonymous */
@@ -43,6 +47,7 @@ typedef struct client {
     unsigned aq_head, aq_tail;
     int input;         /* antenna input of that receiver, 0 = not set */
     int listening;
+    double zlo, zhi;   /* zoomed waterfall range in Hz, zhi <= zlo = whole view */
     double freq;
     int mode;
     float lo, hi;

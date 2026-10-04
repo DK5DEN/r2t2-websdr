@@ -62,6 +62,8 @@ function el(tag, attrs = {}, ...children) {
   const st = {
     cfg: null, ws: null, gotConfig: false,
     view: -1, viewBand: -1, center: 0, span: 192000, pending: null, userBand: null,
+    // view range (all receivers of the waterfall) vs. shown range (center/span, smaller when zoomed)
+    vLo: 0, vHi: 0, zoomed: false, zRow: null, zFirst: 0, zIgnore: 0, zSent: 0, zTimer: 0,
     freq: 0, mode: 'usb', bw: 0, step: 100,
     listening: false, wantAudio: false, muted: false,
     wfMin: 40, wfMax: 120, autoFrames: 8, smooth: null, lastBins: null,
@@ -300,13 +302,13 @@ function el(tag, attrs = {}, ...children) {
 
   // per segment: which row pixels it fills and from which of its 1024 bins
   function buildSegMaps() {
-    const lo = st.center - st.span / 2;
+    const lo = st.vLo, span = st.vHi - st.vLo;
     st.segMaps = (st.segs || []).map((g) => {
-      const x0 = Math.max(0, Math.floor(((g.lo - lo) / st.span) * ROW));
-      const x1 = Math.min(ROW, Math.ceil(((g.hi - lo) / st.span) * ROW));
+      const x0 = Math.max(0, Math.floor(((g.lo - lo) / span) * ROW));
+      const x1 = Math.min(ROW, Math.ceil(((g.hi - lo) / span) * ROW));
       const idx = new Int16Array(Math.max(0, x1 - x0));
       for (let x = x0; x < x1; x++) {
-        const f = lo + ((x + 0.5) / ROW) * st.span;
+        const f = lo + ((x + 0.5) / ROW) * span;
         idx[x - x0] = Math.max(0, Math.min(1023, Math.floor(((f - g.center) / st.cfg.span + 0.5) * 1024)));
       }
       return { x0, idx };
@@ -315,11 +317,100 @@ function el(tag, attrs = {}, ...children) {
   }
 
   function onSegment(seg, bins) {
+    if (st.zoomed || performance.now() < st.zIgnore) return;
     const m = st.segMaps && st.segMaps[seg];
     if (!m) return;
     for (let i = 0; i < m.idx.length; i++) st.row[m.x0 + i] = bins[m.idx[i]];
     // segment 0 sets the pace: one row per frame of the first receiver
     if (seg === 0) onWaterfall(st.row.slice());
+  }
+
+  // zoomed line: the server sends each segment's share of a ROW-point line over the shown range
+  function onZoomPart(seg, x0, part) {
+    if (!st.zoomed || performance.now() < st.zIgnore) return;
+    st.zRow.set(part.subarray(0, Math.min(part.length, ROW - x0)), x0);
+    if (seg === st.zFirst) onWaterfall(st.zRow.slice());
+  }
+
+  // ------------------------------------------------------------ zoom
+
+  const ZOOM_MIN_SPAN = 10000;   // narrowest shown range in Hz (the FFT resolves ~47 Hz)
+
+  function zoomFactor() { return st.vHi > st.vLo ? (st.vHi - st.vLo) / st.span : 1; }
+
+  // redraw the history for the new range, so zooming and panning do not start from black
+  function remapHistory(oldLo, oldSpan, newLo, newSpan) {
+    const tmp = document.createElement('canvas');
+    tmp.width = hist.width;
+    tmp.height = hist.height;
+    tmp.getContext('2d').drawImage(hist, 0, 0);
+    histCtx.fillStyle = '#000';
+    histCtx.fillRect(0, 0, hist.width, hist.height);
+    const sx = ((newLo - oldLo) / oldSpan) * ROW, sw = (newSpan / oldSpan) * ROW;
+    const dx0 = Math.max(0, -sx / sw * ROW), dx1 = Math.min(ROW, ((ROW - sx) / sw) * ROW);
+    if (dx1 > dx0) {
+      histCtx.imageSmoothingEnabled = false;
+      histCtx.drawImage(tmp, sx + (dx0 / ROW) * sw, 0, ((dx1 - dx0) / ROW) * sw, hist.height, dx0, 0, dx1 - dx0, hist.height);
+    }
+  }
+
+  // show [lo, lo + span] of the view; tells the server which part to send
+  function setShown(lo, span) {
+    const vSpan = st.vHi - st.vLo;
+    if (!(vSpan > 0)) return;
+    span = Math.max(Math.min(ZOOM_MIN_SPAN, vSpan), Math.min(vSpan, span));
+    lo = Math.max(st.vLo, Math.min(st.vHi - span, lo));
+    const oldLo = st.center - st.span / 2, oldSpan = st.span;
+    if (Math.abs(lo - oldLo) < 1 && Math.abs(span - oldSpan) < 1) return;
+    // a new zoom factor changes the noise floor per pixel: set the contrast again (not when panning)
+    if (oldSpan > 0 && Math.abs(span / oldSpan - 1) > 0.01) st.autoFrames = 6;
+    st.center = lo + span / 2;
+    st.span = span;
+    st.zoomed = span < vSpan - 1;
+    if (oldSpan > 0) remapHistory(oldLo, oldSpan, lo, span);
+    drawWaterfall();
+    st.smooth = null;
+    st.zRow = new Uint8Array(ROW);
+    const segs = st.segs || [];
+    const first = segs.findIndex((g) => g.hi > lo && g.lo < lo + span);
+    st.zFirst = first < 0 ? 0 : first;
+    // lines still on their way were made for the old range
+    st.zIgnore = performance.now() + 250;
+    sendZoom();
+    $('zoom-wert') && ($('zoom-wert').textContent = `${zoomFactor() < 10 ? zoomFactor().toFixed(1).replace('.0', '').replace('.', ',') : Math.round(zoomFactor())}×`);
+    drawWfScale();
+    updatePassband();
+    drawSpectrum();
+    if (!EMBED) drawRibbon();
+  }
+
+  // at most every 100 ms, the last state always goes out
+  function sendZoom() {
+    clearTimeout(st.zTimer);
+    const go = () => {
+      st.zSent = performance.now();
+      const lo = st.center - st.span / 2;
+      send(st.zoomed ? { cmd: 'zoom', lo: Math.round(lo), hi: Math.round(lo + st.span) } : { cmd: 'zoom' });
+    };
+    const wait = 100 - (performance.now() - st.zSent);
+    if (wait <= 0) go(); else st.zTimer = setTimeout(go, wait);
+  }
+
+  function zoomAt(factor, anchor) {
+    const lo = st.center - st.span / 2;
+    if (anchor === undefined) anchor = st.freq >= lo && st.freq <= lo + st.span ? st.freq : st.center;
+    const frac = (anchor - lo) / st.span;
+    const span = st.span / factor;
+    setShown(anchor - frac * span, span);
+  }
+
+  function zoomAll() { setShown(st.vLo, st.vHi - st.vLo); }
+
+  // tuned outside the shown part while zoomed: move the shown part along
+  function followZoom(f) {
+    if (!st.zoomed) return;
+    const lo = st.center - st.span / 2, edge = st.span * 0.05;
+    if (f < lo + edge || f > lo + st.span - edge) setShown(f - st.span / 2, st.span);
   }
 
   function onWaterfall(bins) {
@@ -697,6 +788,7 @@ function el(tag, attrs = {}, ...children) {
     renderFreq();
     store.set('freq', f);
     ensureView(f);
+    followZoom(f);
     updatePassband();
     drawSpectrum();
     if (!EMBED) {
@@ -711,8 +803,8 @@ function el(tag, attrs = {}, ...children) {
     if (!st.cfg || !st.ws || st.ws.readyState !== 1) return;
     // refused for lack of receivers: wait until one is free (status) or the user picks a band
     if (st.noView && !force) return;
-    const inner = (st.span / 2) * VIEW_INNER;
-    const covered = st.view >= 0 && Math.abs(f - st.center) < inner;
+    const vCenter = (st.vLo + st.vHi) / 2, inner = ((st.vHi - st.vLo) / 2) * VIEW_INNER;
+    const covered = st.view >= 0 && Math.abs(f - vCenter) < inner;
     if (!force && covered) return;
     // a band whose edges hold f (the server widens it over the whole band while
     // receivers are free), else one whose centre is near
@@ -725,7 +817,7 @@ function el(tag, attrs = {}, ...children) {
     // the band view is already open but does not reach f (not widened): free view instead
     if (best >= 0 && !(st.viewBand === best && st.view >= 0 && !covered)) { requestBand(best); return; }
     const c = Math.round(f / VIEW_GRID) * VIEW_GRID;
-    if (!force && st.view >= 0 && st.viewBand < 0 && Math.abs(c - st.center) < 1) return;
+    if (!force && st.view >= 0 && st.viewBand < 0 && Math.abs(c - vCenter) < 1) return;
     if (st.pending === `c${c}`) return;
     st.pending = `c${c}`;
     send({ cmd: 'view', center: c });
@@ -769,11 +861,26 @@ function el(tag, attrs = {}, ...children) {
     st.layout = layout;
     st.view = m.id;
     st.viewBand = m.band;
-    st.center = m.lo !== undefined ? (m.lo + m.hi) / 2 : m.center;
-    st.span = m.lo !== undefined ? m.hi - m.lo : m.span;
+    const shownLo = st.center - st.span / 2, shownSpan = st.span, wasZoomed = st.zoomed;
+    st.vLo = m.lo !== undefined ? m.lo : m.center - m.span / 2;
+    st.vHi = m.lo !== undefined ? m.hi : m.center + m.span / 2;
     st.segs = m.segments && m.segments.length ? m.segments
       : [{ center: m.center, lo: m.center - m.span / 2, hi: m.center + m.span / 2 }];
     buildSegMaps();
+    // keep a zoom that still lies inside the (new) view, else show all of it
+    st.center = (st.vLo + st.vHi) / 2;
+    st.span = st.vHi - st.vLo;
+    st.zoomed = false;
+    if (wasZoomed && shownLo >= st.vLo && shownLo + shownSpan <= st.vHi) {
+      // start from the old shown range (nudged, so setShown applies it) to keep the history in place
+      st.span = shownSpan + 2;
+      st.center = shownLo + st.span / 2;
+      setShown(shownLo, shownSpan);
+    } else {
+      setShown(st.vLo, st.vHi - st.vLo);
+      send({ cmd: 'zoom' });
+      $('zoom-wert') && ($('zoom-wert').textContent = '1×');
+    }
     // the band view may not reach the tuned frequency (band not widened yet)
     setTimeout(() => ensureView(st.freq), 0);
     st.viewAnt = m.antenna || '';
@@ -862,6 +969,16 @@ function el(tag, attrs = {}, ...children) {
       return true;
     },
     getModulation() { return st.mode === 'fm' ? 'nfm' : st.mode; },
+    // factor 1 = whole view; centre in Hz, default the tuned frequency
+    setZoom(factor, center) {
+      factor = Number(factor);
+      if (!isFinite(factor) || factor < 1) return false;
+      const span = (st.vHi - st.vLo) / factor;
+      const c = isFinite(Number(center)) && Number(center) > 0 ? Number(center) : st.freq;
+      setShown(c - span / 2, span);
+      return true;
+    },
+    getZoom() { return { factor: zoomFactor(), lo: st.center - st.span / 2, hi: st.center + st.span / 2 }; },
   };
 
   // Cross-origin parents can do the same with postMessage({type: 'r2t2sdr:set', freq, mode}).
@@ -870,6 +987,7 @@ function el(tag, attrs = {}, ...children) {
     if (!d || d.type !== 'r2t2sdr:set') return;
     if (d.mode) window.UI.setModulation(d.mode);
     if (d.freq) window.UI.setFrequency(d.freq);
+    if (d.zoom) window.UI.setZoom(d.zoom, d.zoomCenter);
   });
 
   // ------------------------------------------------------------ accounts and administration
@@ -1031,7 +1149,15 @@ function el(tag, attrs = {}, ...children) {
     const khz = (hz / 1000).toFixed(2), mhz = (hz / 1e6).toFixed(4);
     return khz.startsWith(q) || mhz.startsWith(q);
   }
-  let boxTable = null, adminTable = null, userTable = null;
+  let boxTable = null, adminTable = null, userTable = null, onlineTable = null, logTable = null;
+
+  // "3 min", "2 h 5 min", "12 s"
+  function dauer(s) {
+    if (s < 60) return `${s} s`;
+    if (s < 3600) return `${Math.floor(s / 60)} min`;
+    return `${Math.floor(s / 3600)} h ${Math.floor((s % 3600) / 60)} min`;
+  }
+  const onlineName = (o) => o.user || (o.guest ? `${o.guest} (Gast)` : 'Gast');
 
   function setupTables() {
     for (const sel of document.querySelectorAll('.sdr-art-wahl')) {
@@ -1089,6 +1215,50 @@ function el(tag, attrs = {}, ...children) {
       row: userRow,
       empty: 'Kein Konto passt zu diesem Filter.',
       count: (shown, all) => { $('nutzer-zahl').textContent = shown === all ? `${all} Konten` : `${shown} von ${all} Konten`; },
+    });
+    logTable = dataTable({
+      table: $('log-tabelle'), footer: $('log-fuss'), key: 'r2t2:verwaltung-log:proseite',
+      start: { feld: 't', richtung: 'descending' }, columns: 4,
+      value: (l, field) => l[field],
+      filters: { logq: $('logq') },
+      match: (l) => textMatch($('logq').value.trim(), `${l.who} ${l.ip} ${l.ev}`),
+      row: (l) => el('tr', {},
+        el('td', { class: 'mono' }, l.t),
+        el('td', {}, l.who),
+        el('td', { class: 'mono' }, l.ip),
+        el('td', { class: 'wrap' }, l.ev)),
+      empty: 'Kein Eintrag passt zu dieser Suche.',
+      count: (shown, all) => {
+        $('log-zahl').textContent = shown === all ? `${all} Einträge${all >= 500 ? ' (die neuesten)' : ''}` : `${shown} von ${all} Einträgen`;
+      },
+    });
+    onlineTable = dataTable({
+      table: $('online-tabelle'), footer: $('online-fuss'), key: 'r2t2:verwaltung-online:proseite',
+      start: { feld: 'idle', richtung: 'ascending' }, columns: 6,
+      value: (o, field) => (field === 'name' ? onlineName(o) : field === 'freq' ? (o.listening ? o.freq : null) : o[field]),
+      filters: { onq: $('onq'), onart: $('onart') },
+      match: (o) => {
+        const a = $('onart').value;
+        return textMatch($('onq').value.trim(), `${onlineName(o)} ${o.ip}`)
+          && (!a || (a === 'konto' && o.user) || (a === 'gast' && !o.user) || (a === 'hoert' && o.listening));
+      },
+      row: (o) => el('tr', {},
+        el('td', {}, onlineName(o), o.role ? el('span', { class: 'muted' }, ` · ${ROLE_LABEL[o.role] || o.role}`) : null,
+          o.self ? el('span', { class: 'muted' }, ' (du)') : null),
+        el('td', { class: 'mono' }, o.ip),
+        el('td', {}, o.view ? `${o.view.replace(/(\d)m\b/, '$1 m')}${o.segments > 1 ? ` (${o.segments} RX)` : ''}${o.zoom ? ', Zoom' : ''}` : '–'),
+        el('td', {}, o.listening
+          ? [el('span', { class: 'mono' }, (o.freq / 1e6).toFixed(4)), ` ${o.mode.toUpperCase()}`,
+            el('span', { class: 'muted', title: o.own ? 'belegt einen eigenen Empfänger' : 'aus dem Wasserfall, kostet keinen Empfänger' },
+              o.own ? ' · eigener RX' : '')]
+          : '–'),
+        el('td', { class: 'num' }, dauer(o.since)),
+        el('td', { class: 'num' }, dauer(o.idle))),
+      empty: 'Niemand passt zu diesem Filter.',
+      count: (shown, all) => {
+        $('online-zahl').textContent = shown === all ? `${all} ${all === 1 ? 'Verbindung' : 'Verbindungen'}`
+          : `${shown} von ${all} Verbindungen`;
+      },
     });
   }
 
@@ -1273,6 +1443,7 @@ function el(tag, attrs = {}, ...children) {
 
   function refreshTab() {
     if (activeTab === 'nutzer') send({ cmd: 'users' });
+    if (activeTab === 'online') { send({ cmd: 'online' }); send({ cmd: 'log' }); }
     if (activeTab === 'ant') send({ cmd: 'antennas' });
     if (activeTab === 'station' && st.cfg) {
       $('st-title').value = st.cfg.title || '';
@@ -1490,8 +1661,27 @@ function el(tag, attrs = {}, ...children) {
     if (st.wantAudio) { send({ cmd: 'start' }); sendTune(); }
   }
 
+  // "Online: dk5den, dl1nux, Peter + 2 Gäste" above the chat
+  function renderOnline(m) {
+    const box = $('chat-online');
+    if (!box) return;
+    const names = (m.names || []).map((n) => n.name);
+    const g = m.guests || 0;
+    const rest = g ? `${names.length ? ' + ' : ''}${g} ${g === 1 ? 'Gast' : 'Gäste'}` : '';
+    box.replaceChildren(el('strong', {}, 'Online: '), names.join(', ') + rest);
+  }
+
+  function onLog(m) {
+    $('log-an').checked = Boolean(m.on);
+    const list = (m.lines || []).map(([t, who, ip, ev]) => ({ t, who, ip, ev }));
+    $('log-leer').hidden = list.length > 0;
+    $('log-teil').hidden = list.length === 0;
+    if (logTable) logTable.set(list);
+  }
+
   function onStatus(m) {
     st.status = m;
+    renderOnline(m);
     $('users').textContent = `${m.users} ${m.users === 1 ? 'Besucher' : 'Besucher'} · ${m.listeners} hören`;
     updateMeterInfo();
     // a receiver is free again: get the waterfall back
@@ -1551,6 +1741,8 @@ function el(tag, attrs = {}, ...children) {
           case 'login': onLogin(m); break;
           case 'logout': onLogout(); break;
           case 'users': onUsers(m.list); break;
+          case 'online': if (onlineTable) onlineTable.set(m.list); break;
+          case 'log': onLog(m); break;
           case 'antennas': onAntennas(m); break;
           case 'ok': onOkMessage(m); break;
           case 'error': st.pending = null; showError(m.msg); break;
@@ -1561,6 +1753,8 @@ function el(tag, attrs = {}, ...children) {
       const u8 = new Uint8Array(ev.data);
       if (u8[0] === 1) {
         if (u8[1] === st.view) onSegment(u8[2], u8.subarray(3));
+      } else if (u8[0] === 3) {
+        if (u8[1] === st.view) onZoomPart(u8[2], (u8[3] << 8) | u8[4], u8.subarray(7, 7 + ((u8[5] << 8) | u8[6])));
       } else if (u8[0] === 2) {
         onAudio(ev.data);
       }
@@ -1636,6 +1830,14 @@ function el(tag, attrs = {}, ...children) {
     $('lz-datei').addEventListener('change', (e) => { if (e.target.files[0]) importFile(e.target.files[0]); });
     $('form-import').addEventListener('submit', runImport);
     $('nutzer-plus').addEventListener('click', () => userDialog(null));
+    // the online list refreshes itself while it is open
+    setInterval(() => {
+      if (activeTab === 'online' && $('dlg-verwaltung').open) { send({ cmd: 'online' }); send({ cmd: 'log' }); }
+    }, 3000);
+    $('log-weg').innerHTML = `${ICON_PAPIERKORB}<span>Protokoll löschen</span>`;
+    $('log-an').addEventListener('change', (e) => send({ cmd: 'log_set', on: e.target.checked ? 'on' : 'off' }));
+    $('log-weg').addEventListener('click', () => ask('Protokoll löschen?', 'Alle Einträge auf dem Gerät werden gelöscht.',
+      'Löschen', () => send({ cmd: 'log_set', clear: 'yes' })));
     $('form-nutzer').addEventListener('submit', saveUser);
 
     $('form-station').addEventListener('submit', (ev) => {
@@ -1684,10 +1886,49 @@ function el(tag, attrs = {}, ...children) {
     showLevels();
 
     [spec, wf].forEach((c) => {
-      c.addEventListener('click', (e) => clickTune(e, c));
-      c.addEventListener('wheel', wheelTune, { passive: false });
+      c.addEventListener('click', (e) => { if (st.dragged) { st.dragged = false; return; } clickTune(e, c); });
+      // mouse wheel zooms around the pointer, with Shift it tunes as before
+      c.addEventListener('wheel', (e) => {
+        if (e.shiftKey) { wheelTune(e); return; }
+        e.preventDefault();
+        const r = c.getBoundingClientRect();
+        zoomAt(e.deltaY < 0 ? 1.25 : 0.8, xToFreq(e.clientX - r.left, r.width));
+      }, { passive: false });
+      c.addEventListener('dblclick', (e) => { e.preventDefault(); zoomAll(); });
       c.addEventListener('mousemove', (e) => hoverInfo(e, c));
       c.addEventListener('mouseleave', () => { $('hover').textContent = ''; });
+      // drag pans the zoomed waterfall; two fingers zoom
+      const pts = new Map();
+      let pinch = 0;
+      c.addEventListener('pointerdown', (e) => {
+        st.dragged = false;
+        if (e.pointerType === 'mouse' && e.button !== 0) return;
+        try { c.setPointerCapture(e.pointerId); } catch (err) { /* not capturable */ }
+        pts.set(e.pointerId, { x: e.clientX, x0: e.clientX });
+        if (pts.size === 2) { const [a, b] = [...pts.values()]; pinch = Math.abs(a.x - b.x); }
+      });
+      c.addEventListener('pointermove', (e) => {
+        const p = pts.get(e.pointerId);
+        if (!p) return;
+        const r = c.getBoundingClientRect();
+        if (pts.size === 2) {
+          p.x = e.clientX;
+          const [a, b] = [...pts.values()];
+          const d = Math.abs(a.x - b.x);
+          if (pinch > 10 && d > 10) zoomAt(d / pinch, xToFreq((a.x + b.x) / 2 - r.left, r.width));
+          pinch = d;
+          st.dragged = true;
+          return;
+        }
+        const dx = e.clientX - p.x;
+        if (!st.dragged && Math.abs(e.clientX - p.x0) < 5) return;
+        st.dragged = true;
+        p.x = e.clientX;
+        if (st.zoomed) setShown(st.center - st.span / 2 - (dx / r.width) * st.span, st.span);
+      });
+      const up = (e) => { pts.delete(e.pointerId); pinch = 0; };
+      c.addEventListener('pointerup', up);
+      c.addEventListener('pointercancel', up);
     });
     window.addEventListener('hashchange', applyHash);
 
@@ -1715,6 +1956,9 @@ function el(tag, attrs = {}, ...children) {
       $('wfmin').addEventListener('input', (e) => { st.wfMin = Math.min(Number(e.target.value), st.wfMax - 5); showLevels(); });
       $('wfmax').addEventListener('input', (e) => { st.wfMax = Math.max(Number(e.target.value), st.wfMin + 5); showLevels(); });
       $('auto').addEventListener('click', () => { if (st.lastBins) autoLevels(st.lastBins); });
+      $('zoom-ein').addEventListener('click', () => zoomAt(2));
+      $('zoom-aus').addEventListener('click', () => zoomAt(0.5));
+      $('zoom-ganz').addEventListener('click', zoomAll);
 
       const sk = $('skala');
       sk.addEventListener('click', (ev) => { if (st.ribbon) tuneTo(ribbonHz(ev), true); });

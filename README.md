@@ -116,6 +116,11 @@ the config file:
 
 ## Web interface
 
+Zoom: the mouse wheel over waterfall or spectrum zooms around the pointer (Shift + wheel tunes),
+dragging pans, a double click shows the whole view, two fingers zoom on touch screens; the
+panel has −, ganz and ＋. Each viewer zooms on their own; the server then sends only the shown
+part at up to the full FFT resolution (~47 Hz), no extra receiver is used.
+
 Opened directly, the page looks like the remote station of afu.tools: `afu-style.css` and
 `remote.css` are unchanged copies of the afu.tools style sheets, the markup uses the same
 classes (`rm-…`). Own additions are in `sdr.css`. Tables follow the afu.tools design guide with
@@ -151,6 +156,18 @@ Listening and the waterfall need no account. Roles, each including the ones belo
 | `nutzer` | listen and chat when the station restricts this to logged-in users |
 
 Logged-in accounts take receivers from guests, `station` takes them from everyone else.
+
+Verwaltung > Online (admins) lists every connection: account or guest (with the chat name),
+address, waterfall, what they listen to (and whether that uses a receiver of its own), time
+online and time since the last action; refreshed every 3 s. Below it an activity log that an
+admin switches on there (`log = on` in `station.conf`, off by default): connect and disconnect
+with duration, login and logout, listening with frequency and mode (tuning logged at most every
+15 s for moves of 3 kHz or more), waterfall changes and displacements, with name and address, in
+`activity.log` in the state directory (at 1 MB the previous generation becomes
+`activity.log.1`). The page shows the newest 500 lines, searchable.
+
+Everybody sees a line above the chat: "Online: dk5den, dl1nux, Peter + 2 Gäste" (accounts and
+guests who gave a chat name, other guests counted).
 
 Login works without the password on the wire, also over plain http:
 
@@ -198,8 +215,9 @@ OpenWebRX (afu.tools/remote, "external waterfall") drive it without changes:
 
 - `#freq=<Hz>,mod=<usb|lsb|cw|am|nfm>` in the address, read on load and on every change
 - `window.UI.setFrequency(hz)`, `UI.getFrequency()`, `UI.setModulation(mode)`,
-  `UI.getModulation()` for same-origin parents (e.g. through a tunnel)
-- `postMessage({type: "r2t2sdr:set", freq, mode}, "*")` for cross-origin parents
+  `UI.getModulation()` for same-origin parents (e.g. through a tunnel); in addition
+  `UI.setZoom(factor, centreHz)` (1 = whole view) and `UI.getZoom()` (`factor`, `lo`, `hi`)
+- `postMessage({type: "r2t2sdr:set", freq, mode, zoom, zoomCenter}, "*")` for cross-origin parents
 
 The waterfall follows the frequency: if a configured band covers it, that band is shown,
 otherwise a free view centred on a 25 kHz grid. The view moves once the frequency leaves the
@@ -237,6 +255,7 @@ Client to server (JSON text frames):
 | `tune` | `freq` (Hz), `mode` (`usb`, `lsb`, `cw`, `am`, `fm`/`nfm`), `lo`, `hi` (passband in Hz relative to `freq`) |
 | `start` / `stop` | audio on/off (a receiver only outside every active waterfall) |
 | `squelch` | `level` in dBFS, `-999` = off |
+| `zoom` | `lo`, `hi` (Hz): only this part of the view is sent, at up to the full FFT resolution; without fields the whole view |
 | `chat` | `text`, `name` (guests only) |
 | `challenge` | `user`, `purpose` (`login` or `passwd`) |
 | `login` | `user`, `proof` |
@@ -244,6 +263,8 @@ Client to server (JSON text frames):
 | `passwd` | `proof` (old password), `salt`, `hash`, `iter` |
 | `bm_set` / `bm_del` | `id` (0 = new), `name`, `freq`, `mode` / `id` |
 | `users`, `user_set`, `user_del` | `name`, `role`, optional `salt`, `hash`, `iter` |
+| `online` | admin: list of connections |
+| `log` / `log_set` | admin: activity log; `on` (`on`/`off`), `clear` (`yes`) |
 | `station_set` | `title`, `callsign`, `location`, `locator`, `access` (`open`, `login`), `chat` (`all`, `login`, `off`) |
 | `antennas`, `ant_set` | `input`, `name`, `ranges`, `gain`, `att`, `default` |
 | `ping` | keep-alive, sent every 10 s; clients silent for 30 s are dropped |
@@ -254,13 +275,15 @@ Server to client, JSON text frames:
 |---|---|
 | `config` | as `api/config`, plus `access`, `chat`, antenna names |
 | `view` | `id`, `band` (configured band or -1), `center`, `span` (one receiver), `lo`, `hi` (range shown), `input`, `antenna`, `segments` (`center`, `lo`, `hi` per receiver); `id` -1 with `reason`: no waterfall (all receivers busy or taken by a client with priority) |
-| `status` | `users`, `listeners`, `free`, `total`, `active`: per waterfall `view`, `band`, `center`, `lo`, `hi`, `segments`, `viewers`, `listeners` |
+| `log` | `on`, `lines`: newest first, each `[time UTC, who, address, event]` |
+| `status` | `users`, `listeners`, `free`, `total`, `names` (`name`, `guest`), `guests` (unnamed guests), `active`: per waterfall `view`, `band`, `center`, `lo`, `hi`, `segments`, `viewers`, `listeners` |
 | `audio` | `on`, `input`, `antenna`, `own` (true: own receiver, false: cut out of a waterfall) |
 | `bookmarks` | `list` of `id`, `freq`, `mode`, `name` |
 | `chat` | `who`, `guest`, `ts`, `text` |
 | `challenge` | `purpose`, `user`, `salt`, `iter`, `nonce` |
 | `login` / `logout` | `user`, `role`, `token` (only right after login) |
 | `users`, `antennas`, `ok` | administration answers |
+| `online` | `list`: per connection `user`, `role`, `guest` (chat name), `ip`, `since`, `idle` (s since the last command), `view`, `segments`, `zoom`, `listening`, `freq`, `mode`, `own`, `self` |
 | `error` | `msg` (German, shown to the user) |
 
 Binary frames:
@@ -268,6 +291,10 @@ Binary frames:
 - `0x01 view:uint8 segment:uint8 bins[1024]` waterfall line of one segment of view `view`
   (192 kHz around the segment centre), one byte per bin = dBFS + 170, lowest frequency first;
   segments are not synchronised, the client composes them by `view.segments`
+- `0x03 view:uint8 segment:uint8 x0:uint16 n:uint16 bins[n]` zoomed waterfall: points
+  `x0 .. x0+n-1` of a 2048-point line over the `zoom` range, taken from this segment's
+  4096-point FFT (max of the bins a point covers, ~47 Hz resolution); the line is complete when
+  the lowest segment inside the range has arrived
 - `0x02 level:int16 pred:int16 index:uint8 adpcm[128]` 256 audio samples at 8 kHz,
   level in dBFS*10; the ADPCM state travels with every packet
 
