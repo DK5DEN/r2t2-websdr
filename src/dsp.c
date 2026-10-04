@@ -86,6 +86,21 @@ static uint8_t wf_byte(float p)
     return v < 0 ? 0 : v > 255 ? 255 : (uint8_t)v;
 }
 
+/*
+ * The next n samples fall into the unused part of the line period: advance without them
+ * and return 1, so the caller need not even unpack them. Returns 0 (nothing advanced) if
+ * any of them would be used.
+ */
+int wf_skip(wf_t *w, int n)
+{
+    if (w->pos < w->navg * WF_FFT || w->pos + n > w->period)
+        return 0;
+    w->pos += n;
+    if (w->pos >= w->period)
+        w->pos = 0;
+    return 1;
+}
+
 /* One byte per bin: dBFS + 170, max-pooled from WF_FFT to WF_BINS, DC in the middle.
    The full-resolution line stays in spec for zoomed viewers. */
 static void wf_frame(wf_t *w, uint8_t *frame)

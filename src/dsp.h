@@ -91,6 +91,7 @@ int wf_init(wf_t *w, int navg);
 void wf_reset(wf_t *w);
 int wf_push(wf_t *w, const float *iq, int n, uint8_t *frame);
 void wf_zoom(const wf_t *w, double rel0, double df, int n, uint8_t *out);
+int wf_skip(wf_t *w, int n);
 
 void demod_init(demod_t *d);
 void demod_set(demod_t *d, int mode, float lo, float hi);

@@ -43,14 +43,15 @@ that waterfall (or its own receiver) and gets a notice. The listener limit works
 marks the bands where listening costs no receiver and, when all receivers are busy, offers
 them as buttons.
 
-CPU (two Cortex-A9 cores at 667 MHz), measured with all 8 receivers on waterfalls: 44 % of
+CPU (two Cortex-A9 cores at 667 MHz), measured with all 8 receivers on waterfalls: 40 % of
 one core without listeners, about 7 % per segment that has listeners (its FFT), and about
 3.6 % per listener (0.8 % its part of the segment FFT, 2.7 % channel filter and
 demodulator, 0.1 % ADPCM), the same for every filter width. Listeners run on two threads,
 one per core; a segment belongs to thread `rx % 2`, so its FFT is computed once. 30
-listeners keep full audio at 160 % of one core (of 200 %); `max_listeners` defaults to 30,
+listeners keep full audio at 157 % of one core (of 200 %); `max_listeners` defaults to 30,
 `max_clients` to 48 (64 at most). A higher-priority listener bumps the lowest one when the
-limit is reached. The waterfall averages two FFTs per line.
+limit is reached. The waterfall averages two FFTs per line; a receiver that only feeds a
+waterfall does not unpack the samples of the rest of the line period.
 
 Before the fast convolution a listener cost 7.5 % (15 % with a 250 Hz filter) and 16
 listeners dropped packets.

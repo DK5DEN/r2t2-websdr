@@ -1934,6 +1934,17 @@ static void on_packet(const uint8_t *buf, int len)
     int need[NRX], any = 0;
     for (int rx = 0; rx < NRX; rx++) {
         need[rx] = stream == 2 ? rx_view[rx] >= 0 : rx_client[rx] >= 0;
+        if (need[rx] && stream == 2) {
+            /* a waterfall without listeners uses ~2 of ~5 FFT lengths per line: in the
+               rest its samples are not even unpacked (~4 % of a core with 8 waterfalls) */
+            int v = rx_view[rx], sg = rx_seg[rx], lis = 0;
+            for (int i = 0; i < MAX_CLIENTS && !lis; i++)
+                lis = cl[i].fd >= 0 && cl[i].listening && cl[i].dview == v && cl[i].dseg == sg;
+            if (!lis && wf_skip(&views[v].wf[sg], per)) {
+                rx_seq[rx]++;
+                need[rx] = 0;
+            }
+        }
         any |= need[rx];
     }
     if (!any)
