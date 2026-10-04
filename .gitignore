@@ -1,3 +1,4 @@
 *.o
 /r2t2sdr
 test.conf
+/out/

@@ -72,16 +72,27 @@ Gain (-9..32 dB) and attenuator (0..31 dB) per ADC are set through the vendor to
 
 ## Build and install
 
-On the R2T2 (Arch Linux ARM, gcc 6.3, fftw):
+Build on an x86_64 host with Docker and qemu-user (binfmt), not on the R2T2: the armv7
+Debian 9 container (`build/Dockerfile.armv7`) has the device's glibc 2.24 and gcc 6.3.
 
 ```sh
-make
-sudo make install
+tools/build-ai1.sh                      # BUILD_HOST=user@host, result in out/r2t2sdr
+R2T2_SUDO=... tools/deploy-r2t2.sh      # R2T2_HOST, R2T2_KEY; installs without compiling
+```
+
+`build-ai1.sh` refuses binaries that need symbols newer than glibc 2.24; `deploy-r2t2.sh`
+checks the checksum and the shared libraries on the device, runs `make install-files` and
+restarts the service. First installation on the device:
+
+```sh
+sudo make install-files BIN=out/r2t2sdr
 sudo systemctl disable --now radiowatch
 sudo systemctl enable --now r2t2sdr
 ```
 
-`make install` copies the binary and web files to `/opt/r2t2sdr`, installs
+`make` and `make install` still work on the device itself (Arch Linux ARM, gcc 6.3, fftw).
+
+`make install-files` copies the binary and web files to `/opt/r2t2sdr`, installs
 `/etc/r2t2sdr.conf` if it does not exist yet and adds `r2t2sdr.service`. The service conflicts with
 the original `radiowatch.service` (`r2t2srv`/`r2t2client`), which must not run at the same time.
 

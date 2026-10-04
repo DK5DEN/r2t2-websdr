@@ -1,0 +1,11 @@
+# Build environment for the R2T2: armv7 Debian 9 "stretch" has glibc 2.24 and gcc 6.3, the
+# same as the Arch Linux ARM (2017) on the device, so the binary runs there unchanged.
+# Runs emulated (qemu-user via binfmt) on an x86_64 build host:
+#   docker build --platform linux/arm/v7 -t r2t2-build:armv7 -f build/Dockerfile.armv7 build
+FROM arm32v7/debian:stretch
+RUN printf 'deb http://archive.debian.org/debian stretch main\ndeb http://archive.debian.org/debian-security stretch/updates main\n' \
+        > /etc/apt/sources.list \
+ && apt-get -o Acquire::Check-Valid-Until=false update -qq \
+ && apt-get install -y -qq --no-install-recommends gcc libc6-dev make libfftw3-dev \
+ && rm -rf /var/lib/apt/lists/*
+WORKDIR /src

@@ -16,9 +16,14 @@ r2t2sdr: $(OBJ)
 src/%.o: src/%.c src/*.h
 	$(CC) $(CFLAGS) -c -o $@ $<
 
-install: r2t2sdr
+# build where the toolchain matches the device (tools/build-ai1.sh), install without building
+BIN     ?= r2t2sdr
+
+install: r2t2sdr install-files
+
+install-files:
 	install -d $(PREFIX)/www
-	install -m 755 r2t2sdr $(PREFIX)/r2t2sdr
+	install -m 755 $(BIN) $(PREFIX)/r2t2sdr
 	install -m 644 www/*.html www/*.css www/*.js www/*.svg $(PREFIX)/www/
 	test -f /etc/r2t2sdr.conf || install -m 644 dist/r2t2sdr.conf /etc/r2t2sdr.conf
 	install -m 644 dist/r2t2sdr.service /etc/systemd/system/r2t2sdr.service
@@ -27,4 +32,4 @@ install: r2t2sdr
 clean:
 	rm -f r2t2sdr src/*.o
 
-.PHONY: install clean
+.PHONY: install install-files clean
