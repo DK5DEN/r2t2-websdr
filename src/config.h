@@ -8,6 +8,7 @@ typedef struct {
     double center;      /* waterfall centre frequency in Hz */
     int input;          /* antenna input 1..3 */
     char mode[8];       /* default mode: lsb, usb, cw, am, fm */
+    double lo, hi;      /* band edges in Hz for widening, 0 = one receiver only */
 } band_cfg_t;
 
 typedef struct {
@@ -23,6 +24,7 @@ typedef struct {
     int att[2];         /* attenuator per ADC in dB, 0..31 */
     int wf_fps;
     int max_clients;
+    int max_listeners;  /* CPU guard for listeners fed from the wide stream */
     char state_dir[256];  /* accounts, sessions, bookmarks, station settings */
     int access;           /* 0 = everyone may listen, 1 = only logged-in users */
     int chat;             /* 0 = off, 1 = logged-in users, 2 = everyone */

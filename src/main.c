@@ -1,18 +1,24 @@
 /*
  * r2t2sdr - multi-user WebSDR for the DARC R2T2 receiver.
  *
- * Every waterfall view in use occupies one FPGA receiver (192 kS/s stream),
- * every listener occupies one more (16 kS/s stream). Channel selection is done
- * by the FPGA; the CPU only computes the waterfall FFT and demodulates audio.
+ * Waterfall views are fed by FPGA receivers (192 kS/s wide streams); a band
+ * is widened over several receivers side by side while receivers are free.
+ * Listeners inside a view are cut out of its wide stream by the CPU (DDC) on
+ * a second thread and cost no receiver; outside every view a listener gets a
+ * receiver of its own (16 kS/s narrow stream). Receivers go by priority:
+ * station > logged-in user > guest.
  *
  * A view is either one of the configured bands or a free centre frequency
  * (used when the page follows an external rig). Clients on the same view share
- * its receiver.
+ * its receivers.
  */
+#define _GNU_SOURCE
 #include <errno.h>
 #include <getopt.h>
 #include <math.h>
 #include <poll.h>
+#include <pthread.h>
+#include <sched.h>
 #include <signal.h>
 #include <stdarg.h>
 #include <stdio.h>
@@ -40,14 +46,22 @@
 #define LOGIN_FAILS    5      /* failed logins per address ... */
 #define LOGIN_LOCK_S   60     /* ... before it is locked for this long */
 
+#define MAX_SEG        4        /* receivers side by side in one waterfall */
+#define SEG_USABLE     85000.0  /* usable half width of a 192 kHz wide stream */
+#define DDC_REACH      88000.0  /* listener frequency may be this far from a segment centre */
+#define RX_RESERVE     1        /* receivers kept free when widening bands */
+
 typedef struct {
-    int used;      /* configured band, or free view with viewers */
+    int used;      /* configured band, or free view in use */
     int band;      /* configured band index, -1 for a free view */
-    double center;
-    int input;
-    int rx;        /* receiver feeding the waterfall, -1 = inactive */
+    double center; /* configured or requested centre */
+    int input;     /* antenna input of segment 0 */
     int viewers;
-    wf_t wf;
+    int nseg;      /* receivers feeding the waterfall, 0 = inactive */
+    int seg_rx[MAX_SEG];
+    double seg_center[MAX_SEG];
+    double show_lo, show_hi;   /* range the waterfall shows */
+    wf_t wf[MAX_SEG];
 } view_t;
 
 static config_t cfg;
@@ -55,9 +69,46 @@ static client_t cl[MAX_CLIENTS];
 static view_t views[MAX_VIEWS];
 static int nviews;
 static int rx_view[NRX];
+static int rx_seg[NRX];
 static int rx_client[NRX];
 static volatile sig_atomic_t running = 1;
 static int verbose;
+/*
+ * Listener threads: listeners fed from the wide stream (DDC + demod + ADPCM,
+ * ~9.5 % of a core each) run on NWORK threads, one per core; client slot i
+ * belongs to thread i % NWORK. The main loop hands each thread the samples of
+ * every segment its listeners need (worker_t.ring) and sends the audio
+ * packets the threads leave in each client's aq. Listener state (dview, dseg,
+ * ddc, dm, listening, client slots) changes only under dsp_lock(), which takes
+ * every thread's mutex.
+ */
+#define NWORK    2
+#define BLK_RING 1024
+typedef struct {
+    int16_t view, seg, n;
+    float iq[2 * 128];
+} blk_t;
+typedef struct {
+    blk_t ring[BLK_RING];
+    unsigned head, tail, drops;
+    pthread_mutex_t lock;
+    int id;
+} worker_t;
+static worker_t work[NWORK];
+
+static void dsp_lock(void)
+{
+    for (int w = 0; w < NWORK; w++)
+        pthread_mutex_lock(&work[w].lock);
+}
+
+static void dsp_unlock(void)
+{
+    for (int w = NWORK - 1; w >= 0; w--)
+        pthread_mutex_unlock(&work[w].lock);
+}
+
+static int no_ddc;      /* --no-ddc: every listener gets its own receiver (for comparisons) */
 
 static void logmsg(const char *fmt, ...)
 {
@@ -224,23 +275,6 @@ static int mode_parse(const char *s)
     return -1;
 }
 
-static int rx_alloc(void)
-{
-    for (int rx = 0; rx < NRX; rx++)
-        if (rx_view[rx] < 0 && rx_client[rx] < 0)
-            return rx;
-    return -1;
-}
-
-static int rx_free_count(void)
-{
-    int n = 0;
-    for (int rx = 0; rx < NRX; rx++)
-        if (rx_view[rx] < 0 && rx_client[rx] < 0)
-            n++;
-    return n;
-}
-
 static int count_users(int *listeners)
 {
     int users = 0, l = 0;
@@ -256,16 +290,35 @@ static int count_users(int *listeners)
     return users;
 }
 
+static int rx_free_count(void);
+static int view_holders(int id, int *prio);
+static int view_listeners(int id);
+
+/* counts plus every active waterfall, so visitors see where they can listen without a receiver */
 static int status_json(char *b, size_t n)
 {
     int listeners, users = count_users(&listeners);
-    return snprintf(b, n, "{\"type\":\"status\",\"users\":%d,\"listeners\":%d,\"free\":%d,\"total\":%d}",
-                    users, listeners, rx_free_count(), NRX);
+    int o = snprintf(b, n, "{\"type\":\"status\",\"users\":%d,\"listeners\":%d,\"free\":%d,\"total\":%d,"
+                     "\"active\":[", users, listeners, rx_free_count(), NRX);
+    int first = 1;
+    for (int i = 0; i < nviews && o < (int)n - 120; i++) {
+        const view_t *v = &views[i];
+        if (!v->nseg)
+            continue;
+        o += snprintf(b + o, n - o, "%s{\"view\":%d,\"band\":%d,\"center\":%.0f,\"lo\":%.0f,\"hi\":%.0f,"
+                      "\"segments\":%d,\"viewers\":%d,\"listeners\":%d}", first ? "" : ",", i, v->band,
+                      v->center, v->nseg == 1 ? v->seg_center[0] - SEG_USABLE : v->show_lo,
+                      v->nseg == 1 ? v->seg_center[0] + SEG_USABLE : v->show_hi,
+                      v->nseg, v->viewers, view_listeners(i));
+        first = 0;
+    }
+    o += snprintf(b + o, n - o, "]}");
+    return o;
 }
 
 static void broadcast_status(void)
 {
-    char b[160];
+    static char b[2048];
     status_json(b, sizeof(b));
     for (int i = 0; i < MAX_CLIENTS; i++)
         if (cl[i].fd >= 0 && cl[i].ws)
@@ -292,8 +345,9 @@ static int config_json(char *b, size_t n)
     for (int i = 0; i < cfg.nbands && o < (int)n - 200; i++) {
         char nm[80];
         json_escape(nm, sizeof(nm), cfg.bands[i].name);
-        o += snprintf(b + o, n - o, "%s{\"id\":%d,\"name\":\"%s\",\"center\":%.0f,\"mode\":\"%s\"}",
-                      i ? "," : "", i, nm, cfg.bands[i].center, cfg.bands[i].mode);
+        o += snprintf(b + o, n - o, "%s{\"id\":%d,\"name\":\"%s\",\"center\":%.0f,\"mode\":\"%s\","
+                      "\"lo\":%.0f,\"hi\":%.0f}",
+                      i ? "," : "", i, nm, cfg.bands[i].center, cfg.bands[i].mode, cfg.bands[i].lo, cfg.bands[i].hi);
     }
     o += snprintf(b + o, n - o, "]}");
     return o;
@@ -301,21 +355,303 @@ static int config_json(char *b, size_t n)
 
 /* ---------------------------------------------------------------- views */
 
+/*
+ * A view is one waterfall: a configured band or a free centre frequency. It
+ * is fed by 1..MAX_SEG receivers (segments) side by side. Listeners inside a
+ * segment are cut out of its 192 kS/s wide stream (DDC) and cost no receiver;
+ * outside every segment a listener gets a receiver of its own (narrow stream).
+ *
+ * Receivers are handed out by priority: free ones first, then extra segments
+ * of widened bands, then whatever the lowest-priority client holds, if that
+ * is below the asking client (guest < logged in < station).
+ */
+
+static int prio_of(const client_t *c)
+{
+    return c->role == ROLE_STATION ? 3 : c->role >= ROLE_USER ? 2 : 1;
+}
+
+/* clients keeping a view alive (viewers and listeners on its wide stream), highest priority among them */
+static int view_holders(int id, int *prio)
+{
+    int n = 0, p = 0;
+    for (int i = 0; i < MAX_CLIENTS; i++) {
+        const client_t *c = &cl[i];
+        if (c->fd < 0 || !c->ws)
+            continue;
+        if (c->view == id || (c->listening && c->dview == id)) {
+            n++;
+            if (prio_of(c) > p)
+                p = prio_of(c);
+        }
+    }
+    if (prio)
+        *prio = p;
+    return n;
+}
+
+/* last activity among a view's holders: a shared view is as active as its most active user */
+static long view_activity(int id)
+{
+    long t = 0;
+    for (int i = 0; i < MAX_CLIENTS; i++) {
+        const client_t *c = &cl[i];
+        if (c->fd >= 0 && c->ws && (c->view == id || (c->listening && c->dview == id)) && c->last_act > t)
+            t = c->last_act;
+    }
+    return t;
+}
+
+static int view_listeners(int id)
+{
+    int n = 0;
+    for (int i = 0; i < MAX_CLIENTS; i++)
+        if (cl[i].fd >= 0 && cl[i].listening && cl[i].dview == id)
+            n++;
+    return n;
+}
+
+/* segments a band needs to be shown in full (capped at MAX_SEG) */
+static int seg_needed(const view_t *v)
+{
+    if (v->band < 0)
+        return 1;
+    const band_cfg_t *b = &cfg.bands[v->band];
+    if (b->hi <= b->lo)
+        return 1;
+    int n = (int)ceil((b->hi - b->lo) / (2 * SEG_USABLE));
+    return n < 1 ? 1 : n > MAX_SEG ? MAX_SEG : n;
+}
+
+/* centres and shown range for n segments: one segment keeps the plain centre,
+   more are spread evenly over the band around its configured centre */
+static void seg_layout(view_t *v, int n)
+{
+    if (n <= 1 || v->band < 0) {
+        v->seg_center[0] = v->center;
+        v->show_lo = v->center - FS_WIDE / 2;
+        v->show_hi = v->center + FS_WIDE / 2;
+        return;
+    }
+    const band_cfg_t *b = &cfg.bands[v->band];
+    double w = b->hi - b->lo, cover = n * 2 * SEG_USABLE;
+    if (cover > w)
+        cover = w;
+    double start = v->center - cover / 2;
+    if (start < b->lo)
+        start = b->lo;
+    if (start + cover > b->hi)
+        start = b->hi - cover;
+    double step = cover / n;
+    for (int s = 0; s < n; s++)
+        v->seg_center[s] = start + step * (s + 0.5);
+    v->show_lo = start;
+    v->show_hi = start + cover;
+}
+
+static void send_view(client_t *c)
+{
+    view_t *v = &views[c->view];
+    char m[900], an[110];
+    json_escape(an, sizeof(an), ant_get(v->input)->name);
+    int o = snprintf(m, sizeof(m), "{\"type\":\"view\",\"id\":%d,\"band\":%d,\"center\":%.0f,\"span\":%d,"
+                     "\"lo\":%.0f,\"hi\":%.0f,\"input\":%d,\"antenna\":\"%s\",\"segments\":[",
+                     c->view, v->band, v->center, FS_WIDE, v->show_lo, v->show_hi, v->input, an);
+    double half = (v->show_hi - v->show_lo) / v->nseg / 2;
+    for (int s = 0; s < v->nseg; s++)
+        o += snprintf(m + o, sizeof(m) - o, "%s{\"center\":%.0f,\"lo\":%.0f,\"hi\":%.0f}", s ? "," : "",
+                      v->seg_center[s], v->seg_center[s] - half, v->seg_center[s] + half);
+    snprintf(m + o, sizeof(m) - o, "]}");
+    send_text(c, m);
+}
+
+static void send_noview(client_t *c, const char *why)
+{
+    char m[400], w[300];
+    json_escape(w, sizeof(w), why);
+    snprintf(m, sizeof(m), "{\"type\":\"view\",\"id\":-1,\"reason\":\"%s\"}", w);
+    send_text(c, m);
+}
+
+static void send_view_all(int id)
+{
+    for (int i = 0; i < MAX_CLIENTS; i++)
+        if (cl[i].fd >= 0 && cl[i].ws && cl[i].view == id)
+            send_view(&cl[i]);
+}
+
+static int input_for(double f);
+static void listener_route(client_t *c, int may_alloc);
+static void listener_stop(client_t *c);
+static void send_audio_state(client_t *c);
+static void reroute_all(void);
+
+/* put the view on n segments; seg_rx[0..n-1] must be assigned, receivers beyond n are freed */
+static void view_apply(int id, int n)
+{
+    view_t *v = &views[id];
+    for (int s = n; s < v->nseg; s++)
+        if (v->seg_rx[s] >= 0) {
+            rx_view[v->seg_rx[s]] = -1;
+            v->seg_rx[s] = -1;
+        }
+    v->nseg = n;
+    seg_layout(v, n);
+    v->input = input_for(v->seg_center[0]);
+    for (int s = 0; s < n; s++) {
+        int rx = v->seg_rx[s];
+        rx_view[rx] = id;
+        rx_seg[rx] = s;
+        hw_set_input(rx, input_for(v->seg_center[s]));
+        hw_set_freq(rx, v->seg_center[s]);
+        wf_reset(&v->wf[s]);
+    }
+}
+
+/* drop all receivers of a view; its viewers lose the waterfall (with a reason if given) */
+static void view_release(int id, const char *why)
+{
+    view_t *v = &views[id];
+    for (int s = 0; s < v->nseg; s++)
+        if (v->seg_rx[s] >= 0) {
+            rx_view[v->seg_rx[s]] = -1;
+            v->seg_rx[s] = -1;
+        }
+    v->nseg = 0;
+    v->viewers = 0;
+    if (v->band < 0)
+        v->used = 0;
+    for (int i = 0; i < MAX_CLIENTS; i++) {
+        client_t *c = &cl[i];
+        if (c->fd < 0)
+            continue;
+        if (c->view == id) {
+            c->view = -1;
+            if (why && c->ws)
+                send_noview(c, why);
+        }
+        if (c->dview == id) {
+            c->dview = c->dseg = -1;
+            if (c->listening)
+                listener_route(c, 0);
+        }
+    }
+}
+
+static int rx_free_count(void)
+{
+    int n = 0;
+    for (int rx = 0; rx < NRX; rx++)
+        if (rx_view[rx] < 0 && rx_client[rx] < 0)
+            n++;
+    return n;
+}
+
+static int rx_take(int prio);
+
+/* a view nobody watches or listens to any more gives its receivers back */
+static void view_check(int id)
+{
+    if (id >= 0 && views[id].nseg && !view_holders(id, NULL))
+        view_release(id, NULL);
+}
+
+/* add segments while receivers are free (beyond the reserve); 1 if the view changed */
+static int view_widen(int id, int max_add)
+{
+    view_t *v = &views[id];
+    int n = v->nseg, need = seg_needed(v);
+    while (n < need && max_add-- > 0 && rx_free_count() > RX_RESERVE) {
+        int rx = rx_take(0);
+        if (rx < 0)
+            break;
+        v->seg_rx[n++] = rx;
+        rx_view[rx] = id;   /* reserve it until view_apply */
+    }
+    if (n == v->nseg)
+        return 0;
+    view_apply(id, n);
+    return 1;
+}
+
+/*
+ * A receiver for a client of priority prio (0 = band widening), -1 if none.
+ * May shrink a widened band or take a receiver from a lower-priority client.
+ */
+static int rx_take(int prio)
+{
+    for (int rx = 0; rx < NRX; rx++)
+        if (rx_view[rx] < 0 && rx_client[rx] < 0)
+            return rx;
+    if (prio <= 0)
+        return -1;
+
+    /* extra segments come back first, from the widest view */
+    int best = -1;
+    for (int i = 0; i < nviews; i++)
+        if (views[i].nseg > 1 && (best < 0 || views[i].nseg > views[best].nseg))
+            best = i;
+    if (best >= 0) {
+        view_t *v = &views[best];
+        int rx = v->seg_rx[v->nseg - 1];
+        view_apply(best, v->nseg - 1);
+        send_view_all(best);
+        reroute_all();
+        if (rx_view[rx] < 0 && rx_client[rx] < 0)
+            return rx;
+    }
+
+    /* holder below prio: lowest priority first (guests), among those the one
+       inactive for the longest time; own listener receivers and views alike */
+    int vrx = -1, bp = prio;
+    long bact = 0;
+    for (int rx = 0; rx < NRX; rx++) {
+        int p;
+        long act;
+        if (rx_client[rx] >= 0) {
+            p = prio_of(&cl[rx_client[rx]]);
+            act = cl[rx_client[rx]].last_act;
+        } else if (rx_view[rx] >= 0) {
+            view_holders(rx_view[rx], &p);
+            act = view_activity(rx_view[rx]);
+        } else {
+            continue;
+        }
+        if (p < bp || (p == bp && vrx >= 0 && act < bact)) {
+            bp = p;
+            bact = act;
+            vrx = rx;
+        }
+    }
+    const char *why = prio == 3 ? "Der Empfänger wird für die Remote-Station gebraucht."
+                                : "Der Empfänger wurde für einen angemeldeten Nutzer freigegeben.";
+    if (vrx >= 0 && rx_client[vrx] >= 0) {
+        client_t *c = &cl[rx_client[vrx]];
+        listener_stop(c);
+        send_error(c, why);
+        send_audio_state(c);
+        return vrx;
+    }
+    if (vrx >= 0) {
+        char msg[300];
+        snprintf(msg, sizeof(msg), "%s Hören geht weiter auf allen Bändern, die gerade empfangen werden.", why);
+        view_release(rx_view[vrx], msg);
+        if (rx_view[vrx] < 0 && rx_client[vrx] < 0)
+            return vrx;
+    }
+    return -1;
+}
+
 static void view_leave(client_t *c)
 {
     if (c->view < 0)
         return;
-    view_t *v = &views[c->view];
-    if (--v->viewers <= 0) {
-        v->viewers = 0;
-        if (v->rx >= 0) {
-            rx_view[v->rx] = -1;
-            v->rx = -1;
-        }
-        if (v->band < 0)
-            v->used = 0;
-    }
+    int id = c->view;
+    view_t *v = &views[id];
+    if (v->viewers > 0)
+        v->viewers--;
     c->view = -1;
+    view_check(id);
 }
 
 /*
@@ -328,46 +664,35 @@ static int input_for(double f)
     if (ant_configured())
         return ant_for(f);
     for (int b = 0; b < cfg.nbands; b++)
-        if (fabs(f - cfg.bands[b].center) < FS_WIDE / 2)
+        if (fabs(f - cfg.bands[b].center) < FS_WIDE / 2 ||
+            (cfg.bands[b].lo < cfg.bands[b].hi && f >= cfg.bands[b].lo && f <= cfg.bands[b].hi))
             return cfg.bands[b].input;
     return ant_default();
-}
-
-static void send_view(client_t *c)
-{
-    view_t *v = &views[c->view];
-    char m[300], an[110];
-    json_escape(an, sizeof(an), ant_get(v->input)->name);
-    snprintf(m, sizeof(m), "{\"type\":\"view\",\"id\":%d,\"band\":%d,\"center\":%.0f,\"span\":%d,"
-             "\"input\":%d,\"antenna\":\"%s\"}",
-             c->view, v->band, v->center, FS_WIDE, v->input, an);
-    send_text(c, m);
 }
 
 static void view_join(client_t *c, int id)
 {
     view_t *v = &views[id];
     if (c->view != id) {
-        /* leave first so a view seen only by this client frees its receiver */
+        /* leave first so a view seen only by this client frees its receivers */
         view_leave(c);
-        if (v->rx < 0) {
-            int rx = rx_alloc();
+        if (v->nseg == 0) {
+            int rx = rx_take(prio_of(c));
             if (rx < 0) {
-                if (v->band < 0 && v->viewers == 0)
+                if (v->band < 0 && !view_holders(id, NULL))
                     v->used = 0;
-                send_error(c, "Kein Empfänger für den Wasserfall frei");
+                send_noview(c, "Alle Empfänger belegt. Hören geht weiter auf allen Bändern, die gerade empfangen werden.");
+                broadcast_status();
                 return;
             }
-            v->rx = rx;
-            rx_view[rx] = id;
-            v->input = input_for(v->center);
-            hw_set_input(rx, v->input);
-            hw_set_freq(rx, v->center);
-            wf_reset(&v->wf);
+            v->seg_rx[0] = rx;
+            view_apply(id, 1);
+            view_widen(id, MAX_SEG);
         }
         v->used = 1;
         v->viewers++;
         c->view = id;
+        reroute_all();
     }
     send_view(c);
     broadcast_status();
@@ -381,7 +706,7 @@ static void view_center(client_t *c, double center)
     if (center > cfg.clock / 2 - FS_WIDE / 2)
         center = cfg.clock / 2 - FS_WIDE / 2;
     for (int i = 0; i < nviews; i++)
-        if (views[i].used && fabs(views[i].center - center) < 1) {
+        if (views[i].used && views[i].nseg && fabs(views[i].center - center) < 1) {
             view_join(c, i);
             return;
         }
@@ -390,48 +715,152 @@ static void view_center(client_t *c, double center)
         if (v->used || i == c->view)
             continue;
         v->center = center;
-        v->rx = -1;
+        v->nseg = 0;
         v->viewers = 0;
         v->used = 1;
         view_join(c, i);
         return;
     }
-    send_error(c, "Zu viele Ansichten offen");
+    send_noview(c, "Alle Empfänger belegt. Hören geht weiter auf allen Bändern, die gerade empfangen werden.");
+}
+
+/* once a second: widen one viewed band while receivers are free (most viewers first) */
+static void widen_tick(void)
+{
+    if (rx_free_count() <= RX_RESERVE)
+        return;
+    int best = -1, bestn = 0;
+    for (int i = 0; i < cfg.nbands; i++) {
+        view_t *v = &views[i];
+        if (!v->nseg || v->nseg >= seg_needed(v))
+            continue;
+        int n = view_holders(i, NULL);
+        if (n > bestn) { bestn = n; best = i; }
+    }
+    if (best < 0)
+        return;
+    if (!view_widen(best, 1))
+        return;
+    send_view_all(best);
+    reroute_all();
+    broadcast_status();
 }
 
 /* ---------------------------------------------------------------- listeners */
 
 static void send_audio_state(client_t *c)
 {
-    char m[200], an[110] = "";
+    char m[220], an[110] = "";
     if (c->listening && c->input)
         json_escape(an, sizeof(an), ant_get(c->input)->name);
-    snprintf(m, sizeof(m), "{\"type\":\"audio\",\"on\":%s,\"input\":%d,\"antenna\":\"%s\"}",
-             c->listening ? "true" : "false", c->listening ? c->input : 0, an);
+    snprintf(m, sizeof(m), "{\"type\":\"audio\",\"on\":%s,\"input\":%d,\"antenna\":\"%s\",\"own\":%s}",
+             c->listening ? "true" : "false", c->listening ? c->input : 0, an,
+             c->rx >= 0 ? "true" : "false");
     send_text(c, m);
+}
+
+/* segment whose wide stream reaches f with the listener passband, nearest centre */
+static int seg_for(double f, int *vi, int *si)
+{
+    double best = DDC_REACH + 1;
+    for (int i = 0; i < nviews; i++)
+        for (int s = 0; s < views[i].nseg; s++) {
+            double d = fabs(f - views[i].seg_center[s]);
+            if (d < best) { best = d; *vi = i; *si = s; }
+        }
+    return best <= DDC_REACH;
+}
+
+static double listener_nco(const client_t *c)
+{
+    /* CW: the signal lands at +CW_PITCH, the real part gives the beat note */
+    return c->mode == M_CW ? c->freq - CW_PITCH : c->freq;
+}
+
+/*
+ * Feed a listener from a segment if one covers its frequency, else from a
+ * receiver of its own (allocated only if may_alloc; otherwise it stops).
+ */
+static void listener_route(client_t *c, int may_alloc)
+{
+    if (!c->listening)
+        return;
+    float lo = c->lo, hi = c->hi;
+    double f = listener_nco(c);
+    if (c->mode == M_CW) {
+        lo += CW_PITCH;
+        hi += CW_PITCH;
+    }
+    int vi = -1, si = -1, in;
+    if (!no_ddc && seg_for(f, &vi, &si)) {
+        if (c->rx >= 0) {
+            rx_client[c->rx] = -1;
+            c->rx = -1;
+        }
+        if (c->dview != vi || c->dseg != si) {
+            int old = c->dview;
+            ddc_init(&c->ddc);
+            c->dview = vi;
+            c->dseg = si;
+            if (old != vi)
+                view_check(old);
+        }
+        ddc_set(&c->ddc, f - views[vi].seg_center[si]);
+        in = input_for(views[vi].seg_center[si]);
+    } else {
+        int old = c->dview;
+        c->dview = c->dseg = -1;
+        view_check(old);
+        if (c->rx < 0) {
+            int rx = may_alloc ? rx_take(prio_of(c)) : -1;
+            if (rx < 0) {
+                listener_stop(c);
+                send_error(c, "Alle Empfänger belegt. Hören geht ohne eigenen Empfänger auf allen Bändern, "
+                              "die gerade empfangen werden.");
+                send_audio_state(c);
+                broadcast_status();
+                return;
+            }
+            c->rx = rx;
+            rx_client[rx] = (int)(c - cl);
+        }
+        in = input_for(c->freq);
+        hw_set_input(c->rx, in);
+        hw_set_freq(c->rx, f);
+    }
+    demod_set(&c->dm, c->mode, lo, hi);
+    if (in != c->input) {
+        c->input = in;
+        send_audio_state(c);
+    }
+}
+
+/* after views or segments changed: move listeners to the best source, free own receivers */
+static void reroute_all(void)
+{
+    for (int k = 0; k < MAX_CLIENTS; k++) {
+        client_t *c = &cl[k];
+        if (c->fd < 0 || !c->listening)
+            continue;
+        int had = c->rx >= 0, vi = -1, si = -1;
+        if (c->dview >= 0 && c->dseg >= views[c->dview].nseg)
+            c->dview = c->dseg = -1;
+        if (c->dview < 0 || (seg_for(listener_nco(c), &vi, &si) && (vi != c->dview || si != c->dseg)) ||
+            (c->dview >= 0 && fabs(listener_nco(c) - views[c->dview].seg_center[c->dseg]) > DDC_REACH))
+            listener_route(c, 0);
+        if (c->listening && had != (c->rx >= 0))
+            send_audio_state(c);
+    }
 }
 
 static void apply_tune(client_t *c)
 {
-    if (c->rx < 0)
-        return;
-    float lo = c->lo, hi = c->hi;
-    double f = c->freq;
-    if (c->mode == M_CW) {
-        /* signal lands at +CW_PITCH, real part gives the beat note */
-        f -= CW_PITCH;
-        lo += CW_PITCH;
-        hi += CW_PITCH;
+    int was_own = c->rx >= 0;
+    listener_route(c, 1);
+    if (c->listening && was_own != (c->rx >= 0)) {
+        send_audio_state(c);
+        broadcast_status();
     }
-    int in = input_for(c->freq);
-    if (in != c->input) {
-        c->input = in;
-        hw_set_input(c->rx, in);
-        if (c->listening)
-            send_audio_state(c);
-    }
-    hw_set_freq(c->rx, f);
-    demod_set(&c->dm, c->mode, lo, hi);
 }
 
 /* after antenna changes: put every active receiver on its input again */
@@ -439,18 +868,17 @@ static void reapply_inputs(void)
 {
     for (int i = 0; i < nviews; i++) {
         view_t *v = &views[i];
-        if (v->rx < 0)
+        if (!v->nseg)
             continue;
-        v->input = input_for(v->center);
-        hw_set_input(v->rx, v->input);
-        for (int k = 0; k < MAX_CLIENTS; k++)
-            if (cl[k].fd >= 0 && cl[k].ws && cl[k].view == i)
-                send_view(&cl[k]);
+        v->input = input_for(v->seg_center[0]);
+        for (int s = 0; s < v->nseg; s++)
+            hw_set_input(v->seg_rx[s], input_for(v->seg_center[s]));
+        send_view_all(i);
     }
     for (int k = 0; k < MAX_CLIENTS; k++)
-        if (cl[k].fd >= 0 && cl[k].rx >= 0) {
+        if (cl[k].fd >= 0 && cl[k].listening) {
             cl[k].input = 0;
-            apply_tune(&cl[k]);
+            listener_route(&cl[k], 0);
         }
 }
 
@@ -460,7 +888,20 @@ static void listener_stop(client_t *c)
         rx_client[c->rx] = -1;
         c->rx = -1;
     }
+    int dv = c->dview;
+    c->dview = c->dseg = -1;
     c->listening = 0;
+    /* a view kept only by this listener's audio goes away */
+    view_check(dv);
+}
+
+static int listener_count(void)
+{
+    int n = 0;
+    for (int i = 0; i < MAX_CLIENTS; i++)
+        if (cl[i].fd >= 0 && cl[i].listening)
+            n++;
+    return n;
 }
 
 static void listener_start(client_t *c)
@@ -470,21 +911,37 @@ static void listener_start(client_t *c)
         send_audio_state(c);
         return;
     }
-    if (c->rx < 0) {
-        int rx = rx_alloc();
-        if (rx < 0) {
-            send_error(c, "Alle Empfänger belegt, bitte später erneut versuchen");
+    if (!c->listening && listener_count() >= cfg.max_listeners) {
+        /* CPU guard: a higher-priority listener bumps a lower one */
+        client_t *low = NULL;
+        for (int i = 0; i < MAX_CLIENTS; i++) {
+            client_t *o = &cl[i];
+            if (o->fd < 0 || !o->listening || prio_of(o) >= prio_of(c))
+                continue;
+            /* lowest priority first, then the one inactive for the longest time */
+            if (!low || prio_of(o) < prio_of(low) || (prio_of(o) == prio_of(low) && o->last_act < low->last_act))
+                low = o;
+        }
+        if (!low) {
+            send_error(c, "Alle Hörplätze belegt, bitte später erneut versuchen.");
             send_audio_state(c);
             return;
         }
-        c->rx = rx;
-        rx_client[rx] = (int)(c - cl);
+        listener_stop(low);
+        send_error(low, prio_of(c) == 3 ? "Der Hörplatz wird für die Remote-Station gebraucht."
+                                        : "Der Hörplatz wurde für einen angemeldeten Nutzer freigegeben.");
+        send_audio_state(low);
+    }
+    if (!c->listening) {
+        c->listening = 1;
         c->input = 0;
+        c->dview = c->dseg = -1;
         demod_init(&c->dm);
         c->dm.sql = c->sql;
-        apply_tune(c);
     }
-    c->listening = 1;
+    listener_route(c, 1);
+    if (!c->listening)
+        return;
     send_audio_state(c);
     broadcast_status();
 }
@@ -1053,8 +1510,10 @@ static void chat_cmd(client_t *c, const char *txt)
 
 static void on_open(client_t *c)
 {
+    c->last_act = now_s();
     c->view = -1;
     c->rx = -1;
+    c->dview = c->dseg = -1;
     c->listening = 0;
     c->freq = cfg.nbands ? cfg.bands[0].center : 7100000;
     c->mode = M_LSB;
@@ -1077,6 +1536,8 @@ static void on_text(client_t *c, char *txt, size_t len)
     double v;
     if (!json_str(txt, "cmd", cmd, sizeof(cmd)))
         return;
+    if (strcmp(cmd, "ping"))
+        c->last_act = now_s();
 
     if (account_cmd(c, cmd, txt))
         return;
@@ -1133,17 +1594,6 @@ static int on_http(client_t *c, const char *path)
     static char b[8192];
     if (!strcmp(path, "/api/status")) {
         int o = status_json(b, sizeof(b));
-        o--; /* reopen the object to append the views */
-        o += snprintf(b + o, sizeof(b) - o, ",\"views\":[");
-        int first = 1;
-        for (int i = 0; i < nviews; i++) {
-            if (!views[i].viewers)
-                continue;
-            o += snprintf(b + o, sizeof(b) - o, "%s{\"id\":%d,\"band\":%d,\"center\":%.0f,\"viewers\":%d}",
-                          first ? "" : ",", i, views[i].band, views[i].center, views[i].viewers);
-            first = 0;
-        }
-        o += snprintf(b + o, sizeof(b) - o, "]}");
         net_http_reply(c, 200, "application/json", b, o);
         return 1;
     }
@@ -1161,6 +1611,7 @@ static void client_close(client_t *c)
 {
     if (c->fd < 0)
         return;
+    dsp_lock();
     int was_ws = c->ws;
     if (was_ws)
         logmsg("client %s disconnected", c->ip);
@@ -1172,6 +1623,8 @@ static void client_close(client_t *c)
     c->fd = -1;
     c->view = -1;
     c->rx = -1;
+    c->dview = c->dseg = -1;
+    dsp_unlock();
     if (was_ws)
         broadcast_status();
 }
@@ -1191,7 +1644,7 @@ static inline float s24(uint32_t w)
 static void on_packet(const uint8_t *buf, int len)
 {
     static float iq[NRX][2 * 128];
-    static uint8_t frame[2 + WF_BINS];
+    static uint8_t frame[3 + WF_BINS];
     static uint8_t apkt[8 + AUDIO_BLOCK];
 
     if (len <= 16)
@@ -1223,13 +1676,36 @@ static void on_packet(const uint8_t *buf, int len)
         if (!need[rx])
             continue;
         if (stream == 2) {
-            int v = rx_view[rx];
-            if (wf_push(&views[v].wf, iq[rx], per, frame + 2)) {
+            int v = rx_view[rx], sg = rx_seg[rx];
+            /* frame: 1, view, segment, bins */
+            if (wf_push(&views[v].wf[sg], iq[rx], per, frame + 3)) {
                 frame[0] = 1;
                 frame[1] = (uint8_t)v;
+                frame[2] = (uint8_t)sg;
                 for (int i = 0; i < MAX_CLIENTS; i++)
                     if (cl[i].fd >= 0 && cl[i].ws && cl[i].view == v)
                         net_ws_send(&cl[i], 2, frame, sizeof(frame), 1);
+            }
+            /* listeners cut out of this segment's wide stream: to their listener thread */
+            int want[NWORK] = { 0 };
+            for (int i = 0; i < MAX_CLIENTS; i++)
+                if (cl[i].fd >= 0 && cl[i].listening && cl[i].dview == v && cl[i].dseg == sg)
+                    want[i % NWORK] = 1;
+            for (int k = 0; k < NWORK; k++) {
+                if (!want[k])
+                    continue;
+                worker_t *wk = &work[k];
+                unsigned h = wk->head;
+                if (h - __atomic_load_n(&wk->tail, __ATOMIC_ACQUIRE) >= BLK_RING) {
+                    wk->drops++;
+                    continue;
+                }
+                blk_t *b = &wk->ring[h % BLK_RING];
+                b->view = (int16_t)v;
+                b->seg = (int16_t)sg;
+                b->n = (int16_t)per;
+                memcpy(b->iq, iq[rx], 2 * per * sizeof(float));
+                __atomic_store_n(&wk->head, h + 1, __ATOMIC_RELEASE);
             }
         } else {
             client_t *c = &cl[rx_client[rx]];
@@ -1241,13 +1717,87 @@ static void on_packet(const uint8_t *buf, int len)
     }
 }
 
+/* ---------------------------------------------------------------- listener thread */
+
+static void *listener_thread(void *arg)
+{
+    worker_t *wk = arg;
+    float nb[2 * 32];
+    uint8_t pkt[AQ_SIZE];
+    for (;;) {
+        unsigned t = wk->tail;
+        if (t == __atomic_load_n(&wk->head, __ATOMIC_ACQUIRE)) {
+            usleep(2000);
+            continue;
+        }
+        const blk_t *b = &wk->ring[t % BLK_RING];
+        pthread_mutex_lock(&wk->lock);
+        for (int i = wk->id; i < MAX_CLIENTS; i += NWORK) {
+            client_t *c = &cl[i];
+            if (c->fd < 0 || !c->listening || c->dview != b->view || c->dseg != b->seg)
+                continue;
+            int m = ddc_process(&c->ddc, b->iq, b->n, nb, 32);
+            demod_process(&c->dm, nb, m);
+            int n;
+            while ((n = demod_packet(&c->dm, pkt)) > 0) {
+                unsigned h = c->aq_head;
+                if (h - __atomic_load_n(&c->aq_tail, __ATOMIC_ACQUIRE) >= AQ_LEN)
+                    continue;   /* main loop behind: drop */
+                memcpy(c->aq[h % AQ_LEN], pkt, n);
+                c->aqn[h % AQ_LEN] = (uint16_t)n;
+                __atomic_store_n(&c->aq_head, h + 1, __ATOMIC_RELEASE);
+            }
+        }
+        pthread_mutex_unlock(&wk->lock);
+        __atomic_store_n(&wk->tail, t + 1, __ATOMIC_RELEASE);
+    }
+    return NULL;
+}
+
+/* send what the listener thread produced */
+static void drain_audio(void)
+{
+    for (int i = 0; i < MAX_CLIENTS; i++) {
+        client_t *c = &cl[i];
+        if (c->fd < 0)
+            continue;
+        unsigned h = __atomic_load_n(&c->aq_head, __ATOMIC_ACQUIRE);
+        while (c->aq_tail != h) {
+            unsigned t = c->aq_tail;
+            net_ws_send(c, 2, c->aq[t % AQ_LEN], c->aqn[t % AQ_LEN], 1);
+            __atomic_store_n(&c->aq_tail, t + 1, __ATOMIC_RELEASE);
+        }
+    }
+}
+
+static int start_listener_threads(void)
+{
+    pthread_mutexattr_t a;
+    pthread_mutexattr_init(&a);
+    pthread_mutexattr_settype(&a, PTHREAD_MUTEX_RECURSIVE);
+    for (int w = 0; w < NWORK; w++) {
+        work[w].id = w;
+        pthread_mutex_init(&work[w].lock, &a);
+        pthread_t th;
+        if (pthread_create(&th, NULL, listener_thread, &work[w]))
+            return -1;
+        /* thread 0 gets the second core to itself; thread 1 shares the first
+           with the main loop, which needs ~45 % of it with 8 waterfalls */
+        cpu_set_t set;
+        CPU_ZERO(&set);
+        CPU_SET(w == 0 ? 1 : 0, &set);
+        pthread_setaffinity_np(th, sizeof(set), &set);
+    }
+    return 0;
+}
+
 /* ---------------------------------------------------------------- main */
 
 static void usage(const char *prog)
 {
     fprintf(stderr,
             "usage: %s [-c config] [-v]\n"
-            "       %s [-c config] --user NAME [--role admin|lesezeichen|nutzer]\n"
+            "       %s [-c config] --user NAME [--role admin|lesezeichen|station|nutzer]\n"
             "           create an account or set its password (asks for it)\n"
             "       %s [-c config] --users\n"
             "           list the accounts\n",
@@ -1312,6 +1862,7 @@ int main(int argc, char **argv)
         { "user", required_argument, NULL, 'U' },
         { "role", required_argument, NULL, 'R' },
         { "users", no_argument, NULL, 'L' },
+        { "no-ddc", no_argument, NULL, 'D' },
         { NULL, 0, NULL, 0 },
     };
     int opt;
@@ -1322,6 +1873,7 @@ int main(int argc, char **argv)
         case 'U': new_user = optarg; break;
         case 'R': new_role = optarg; break;
         case 'L': list_users = 1; break;
+        case 'D': no_ddc = 1; break;
         default: usage(argv[0]); return 1;
         }
     }
@@ -1359,6 +1911,7 @@ int main(int argc, char **argv)
         cl[i].fd = -1;
         cl[i].view = -1;
         cl[i].rx = -1;
+        cl[i].dview = cl[i].dseg = -1;
     }
 
     if (hw_init(cfg.clock) < 0)
@@ -1382,17 +1935,24 @@ int main(int argc, char **argv)
     nviews = cfg.nbands + NRX;
     for (int i = 0; i < nviews; i++) {
         view_t *v = &views[i];
-        v->rx = -1;
+        for (int s = 0; s < MAX_SEG; s++)
+            v->seg_rx[s] = -1;
         v->band = i < cfg.nbands ? i : -1;
         v->used = i < cfg.nbands;
         if (i < cfg.nbands) {
             v->center = cfg.bands[i].center;
             v->input = cfg.bands[i].input;
         }
-        if (wf_init(&v->wf, navg) < 0) {
-            logmsg("out of memory");
-            return 1;
-        }
+        for (int s = 0; s < MAX_SEG; s++)
+            if (wf_init(&v->wf[s], navg) < 0) {
+                logmsg("out of memory");
+                return 1;
+            }
+    }
+
+    if (start_listener_threads() < 0) {
+        logmsg("cannot start the listener thread");
+        return 1;
     }
 
     int sfd = hw_open_stream(cfg.ifname);
@@ -1403,7 +1963,7 @@ int main(int argc, char **argv)
 
     struct pollfd pfd[2 + MAX_CLIENTS];
     int map[2 + MAX_CLIENTS];
-    time_t last_status = time(NULL), last_stats = last_status;
+    time_t last_status = time(NULL), last_stats = last_status, last_tick = last_status;
     unsigned long npkt = 0;
 
     while (running) {
@@ -1436,6 +1996,7 @@ int main(int argc, char **argv)
         }
 
         npkt += hw_stream_read(on_packet);
+        drain_audio();
 
         if (pfd[0].revents & POLLIN) {
             char ip[48];
@@ -1453,12 +2014,15 @@ int main(int argc, char **argv)
                     continue;
                 }
                 client_t *c = &cl[slot];
+                dsp_lock();
                 memset(c, 0, sizeof(*c));
                 c->fd = fd;
                 c->view = -1;
                 c->rx = -1;
+                c->dview = c->dseg = -1;
                 c->last_rx = now_s();
                 snprintf(c->ip, sizeof(c->ip), "%s", ip);
+                dsp_unlock();
             }
         }
 
@@ -1472,7 +2036,10 @@ int main(int argc, char **argv)
             }
             if (pfd[k].revents & (POLLIN | POLLHUP)) {
                 c->last_rx = now_s();
-                if (net_read(c, cfg.www, &callbacks) < 0) {
+                dsp_lock();
+                int r = net_read(c, cfg.www, &callbacks);
+                dsp_unlock();
+                if (r < 0) {
                     client_close(c);
                     continue;
                 }
@@ -1498,14 +2065,25 @@ int main(int argc, char **argv)
         }
 
         time_t now = time(NULL);
+        if (now != last_tick) {
+            last_tick = now;
+            dsp_lock();
+            widen_tick();
+            dsp_unlock();
+        }
         if (now - last_status >= 5) {
             last_status = now;
             broadcast_status();
         }
         if (now - last_stats >= 60) {
             unsigned drops = hw_stream_drops(sfd);
-            if (verbose || drops)
-                logmsg("stream: %lu frames/min, %u kernel drops", npkt, drops);
+            unsigned bd = 0;
+            for (int w = 0; w < NWORK; w++) {
+                bd += work[w].drops;
+                work[w].drops = 0;
+            }
+            if (verbose || drops || bd)
+                logmsg("stream: %lu frames/min, %u kernel drops, %u listener blocks dropped", npkt, drops, bd);
             npkt = 0;
             last_stats = now;
         }

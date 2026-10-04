@@ -6,9 +6,9 @@
 <title>R2T2 WebSDR</title>
 <meta name="color-scheme" content="dark light">
 <link rel="icon" href="icon.svg" type="image/svg+xml">
-<link rel="stylesheet" href="afu-style.css?v=20261004e">
-<link rel="stylesheet" href="remote.css?v=20261004e">
-<link rel="stylesheet" href="sdr.css?v=20261004e">
+<link rel="stylesheet" href="afu-style.css?v=20261004h">
+<link rel="stylesheet" href="remote.css?v=20261004h">
+<link rel="stylesheet" href="sdr.css?v=20261004h">
 <script>
   /* light/dark choice before the first paint, same key as afu.tools */
   try { var t = localStorage.getItem('afu.tools:theme'); if (t === 'light' || t === 'dark') document.documentElement.dataset.theme = t; } catch (e) {}
@@ -113,6 +113,7 @@
   </section>
 
   <!-- -------------------------------------------- Wasserfall mit Panel -->
+  <p class="note sdr-belegt" id="belegt" role="status" hidden></p>
   <div class="rm-wf-zeile">
     <div class="rm-wf" id="wfbox">
       <div class="rm-wf-skala mono" id="wfskala"></div>
@@ -368,7 +369,7 @@
 
   <section class="rm-tab-seite" role="tabpanel" data-seite="nutzer">
     <p class="btn-row"><button type="button" class="btn-sm" id="nutzer-plus">＋ Konto</button></p>
-    <p class="field-hint">Admin: alles. Lesezeichen: Lesezeichen pflegen. Nutzer: hören und chatten, wenn das nur nach Anmeldung erlaubt ist.</p>
+    <p class="field-hint">Admin: alles. Lesezeichen: Lesezeichen pflegen. Nutzer: hören und chatten, wenn das nur nach Anmeldung erlaubt ist. Station: wie Nutzer, bekommt aber vor allen anderen einen Empfänger, z. B. für den Wasserfall der Remote-Station. Angemeldete haben Vorrang vor Gästen.</p>
     <div class="filters flach nur-schmal">
       <div class="field grow nur-schmal" id="heim-nuq">
         <label for="nuq">Suche</label>
@@ -380,6 +381,7 @@
           <option value="">alle</option>
           <option value="admin">Admin</option>
           <option value="lesezeichen">Lesezeichen</option>
+          <option value="station">Station</option>
           <option value="nutzer">Nutzer</option>
         </select>
       </div>
@@ -545,6 +547,7 @@
         <label for="nu-role">Rolle</label>
         <select id="nu-role">
           <option value="nutzer">Nutzer: hören und chatten</option>
+          <option value="station">Station: wie Nutzer, mit Vorrang bei den Empfängern</option>
           <option value="lesezeichen">Lesezeichen: dazu Lesezeichen pflegen</option>
           <option value="admin">Admin: alles</option>
         </select>
@@ -614,8 +617,8 @@
 </dialog>
 
 <div class="rm-toasts" id="toasts" role="status" aria-live="polite"></div>
-<script src="kdf.js?v=20261004e"></script>
-<script src="afu-tabelle.js?v=20261004e"></script>
-<script src="app.js?v=20261004e"></script>
+<script src="kdf.js?v=20261004h"></script>
+<script src="afu-tabelle.js?v=20261004h"></script>
+<script src="app.js?v=20261004h"></script>
 </body>
 </html>

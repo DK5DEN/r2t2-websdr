@@ -13,6 +13,7 @@
 #define AGC_FLOOR   1e-6f
 
 static fftwf_plan wf_plan;
+static void ddc_global_init(void);
 static float wf_win[WF_FFT];
 static float wf_norm;
 
@@ -27,6 +28,8 @@ int dsp_global_init(void)
     fftwf_free(b);
     if (!wf_plan)
         return -1;
+
+    ddc_global_init();
 
     /* 4-term Blackman-Harris */
     double sum = 0;
@@ -47,7 +50,10 @@ int wf_init(wf_t *w, int navg)
 {
     w->in = fftwf_malloc(sizeof(fftwf_complex) * WF_FFT);
     w->out = fftwf_malloc(sizeof(fftwf_complex) * WF_FFT);
-    w->navg = navg < 1 ? 1 : navg;
+    /* one line every navg FFT lengths, of which WF_AVG are computed:
+       with 8 receivers on waterfalls the FFTs were most of the CPU load */
+    w->period = (navg < 1 ? 1 : navg) * WF_FFT;
+    w->navg = navg < WF_AVG ? (navg < 1 ? 1 : navg) : WF_AVG;
     wf_reset(w);
     return (w->in && w->out) ? 0 : -1;
 }
@@ -56,6 +62,7 @@ void wf_reset(wf_t *w)
 {
     w->fill = 0;
     w->nacc = 0;
+    w->pos = 0;
     memset(w->acc, 0, sizeof(w->acc));
 }
 
@@ -80,6 +87,11 @@ int wf_push(wf_t *w, const float *iq, int n, uint8_t *frame)
 {
     int ready = 0;
     for (int i = 0; i < n; i++) {
+        int skip = w->pos >= w->navg * WF_FFT;
+        if (++w->pos >= w->period)
+            w->pos = 0;
+        if (skip)
+            continue;
         int f = w->fill;
         w->in[f][0] = iq[2 * i] * wf_win[f];
         w->in[f][1] = iq[2 * i + 1] * wf_win[f];
@@ -135,6 +147,88 @@ static uint8_t ima_encode(ima_t *s, int16_t x)
     if (s->index < 0) s->index = 0;
     if (s->index > 88) s->index = 88;
     return (uint8_t)code;
+}
+
+/* ---------------------------------------------------------------- wide-stream listener */
+
+/*
+ * Measured on the R2T2 (Cortex-A9, NEON): ~4 % of a core per listener with
+ * 160 taps (192 used here) and one decimation stage; two stages (/4, /3) were not cheaper.
+ * Taps are shared, the dot products run on separate I/Q arrays so the
+ * compiler vectorises them.
+ */
+static float ddc_taps[DDC_NT];
+
+static void ddc_global_init(void)
+{
+    /* -6 dB at 8 kHz (output Nyquist), Blackman transition ~5.3..10.7 kHz:
+       SSB/CW flat, AM/FM edges slightly damped; what folds back into the
+       SSB passband (16..19 kHz) is fully in the stop band */
+    double h[DDC_NT], sum = 0;
+    for (int n = 0; n < DDC_NT; n++) {
+        double m = n - (DDC_NT - 1) / 2.0;
+        double fc = 8000.0 / FS_WIDE;
+        double s = m == 0 ? 2 * fc : sin(2 * M_PI * fc * m) / (M_PI * m);
+        h[n] = s * (0.42 - 0.5 * cos(2 * M_PI * n / (DDC_NT - 1)) + 0.08 * cos(4 * M_PI * n / (DDC_NT - 1)));
+        sum += h[n];
+    }
+    for (int n = 0; n < DDC_NT; n++)
+        ddc_taps[n] = (float)(h[n] / sum);
+}
+
+void ddc_init(ddc_t *d)
+{
+    memset(d, 0, sizeof(*d));
+    d->pr = 1;
+    d->dr = 1;
+}
+
+void ddc_set(ddc_t *d, double offset_hz)
+{
+    /* multiply by exp(-j 2 pi offset t): the listener frequency lands on 0 Hz */
+    d->dr = (float)cos(-2 * M_PI * offset_hz / FS_WIDE);
+    d->di = (float)sin(-2 * M_PI * offset_hz / FS_WIDE);
+}
+
+static float dot(const float *a, const float *h)
+{
+    float s = 0;
+    for (int k = 0; k < DDC_NT; k++)
+        s += a[k] * h[k];
+    return s;
+}
+
+/* iq: n complex samples at FS_WIDE; out: up to max complex samples at FS_NARROW */
+int ddc_process(ddc_t *d, const float *iq, int n, float *out, int max)
+{
+    int m = 0;
+    float pr = d->pr, pi = d->pi;
+    for (int i = 0; i < n; i++) {
+        if (d->fill == DDC_BUF) {
+            memmove(d->xr, d->xr + DDC_BUF - DDC_NT, DDC_NT * sizeof(float));
+            memmove(d->xi, d->xi + DDC_BUF - DDC_NT, DDC_NT * sizeof(float));
+            d->fill = DDC_NT;
+        }
+        float a = iq[2 * i], b = iq[2 * i + 1];
+        d->xr[d->fill] = a * pr - b * pi;
+        d->xi[d->fill] = a * pi + b * pr;
+        d->fill++;
+        float t = pr * d->dr - pi * d->di;
+        pi = pr * d->di + pi * d->dr;
+        pr = t;
+        if (++d->phase >= DDC_DEC && d->fill >= DDC_NT) {
+            d->phase = 0;
+            if (m < max) {
+                out[2 * m] = dot(d->xr + d->fill - DDC_NT, ddc_taps);
+                out[2 * m + 1] = dot(d->xi + d->fill - DDC_NT, ddc_taps);
+                m++;
+            }
+        }
+    }
+    float g = 1.0f / sqrtf(pr * pr + pi * pi);
+    d->pr = pr * g;
+    d->pi = pi * g;
+    return m;
 }
 
 /* ---------------------------------------------------------------- demodulator */

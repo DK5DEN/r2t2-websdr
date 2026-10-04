@@ -1,6 +1,6 @@
 CC      ?= gcc
 CFLAGS  ?= -O2 -ffast-math -Wall -Wextra -Wno-unused-parameter -std=gnu99
-LDLIBS  := -lfftw3f -lm
+LDLIBS  := -lfftw3f -lm -lpthread
 
 ifeq ($(shell uname -m),armv7l)
 CFLAGS  += -mcpu=cortex-a9 -mfpu=neon -mfloat-abi=hard -ftree-vectorize

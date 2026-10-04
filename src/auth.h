@@ -3,8 +3,12 @@
 
 #include <stddef.h>
 
-/* Roles, ordered: each one includes the rights of the ones below. */
-enum { ROLE_NONE, ROLE_USER, ROLE_EDITOR, ROLE_ADMIN };
+/*
+ * Roles, ordered: each one includes the rights of the ones below. The station
+ * (external waterfall of a remote station) has the rights of a user and only
+ * differs in receiver priority, so it sits between USER and EDITOR.
+ */
+enum { ROLE_NONE = 0, ROLE_USER = 10, ROLE_STATION = 11, ROLE_EDITOR = 20, ROLE_ADMIN = 30 };
 
 #define MAX_USERS     64
 #define NAME_MAX_LEN  24

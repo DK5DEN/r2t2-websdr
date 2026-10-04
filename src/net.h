@@ -9,6 +9,8 @@
 #define NET_IN_MAX     8192
 #define NET_OUT_MAX    (1 << 20)   /* close clients that fall this far behind */
 #define NET_DROP_LIMIT (128 << 10) /* skip droppable frames above this backlog */
+#define AQ_LEN         32          /* audio packets queued per client */
+#define AQ_SIZE        (8 + AUDIO_BLOCK)
 
 typedef struct client {
     int fd;
@@ -21,6 +23,7 @@ typedef struct client {
     size_t outoff, outlen, outcap;
     unsigned dropped;
     long last_rx;      /* monotonic seconds of the last received data */
+    long last_act;     /* monotonic seconds of the last command other than ping */
 
     /* application state */
     char user[32];     /* logged-in account, "" = anonymous */
@@ -31,7 +34,13 @@ typedef struct client {
     char nonce_user[32];
     long nonce_t;
     int view;          /* waterfall view, -1 = none */
-    int rx;            /* receiver for audio, -1 = none */
+    int rx;            /* own receiver for audio (narrow stream), -1 = none */
+    int dview, dseg;   /* or: view segment whose wide stream feeds the audio, -1 = none */
+    ddc_t ddc;
+    /* audio packets made by the listener thread, sent by the main loop */
+    uint8_t aq[AQ_LEN][AQ_SIZE];
+    uint16_t aqn[AQ_LEN];
+    unsigned aq_head, aq_tail;
     int input;         /* antenna input of that receiver, 0 = not set */
     int listening;
     double freq;

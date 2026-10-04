@@ -10,16 +10,32 @@ internal `rad0` interface (Ethertype `0x7232`):
 
 | Stream | Rate per receiver | Used for |
 |---|---|---|
-| narrow (tag 1) | 16 kS/s | audio of one listener |
-| wide (tag 2) | 192 kS/s | waterfall of one band |
+| narrow (tag 1) | 16 kS/s | audio of a listener outside every waterfall |
+| wide (tag 2) | 192 kS/s | waterfall, and audio of listeners inside it |
 
 `r2t2sdr` treats the eight receivers as a pool:
 
-- every band currently viewed occupies one receiver for its waterfall (shared by all viewers),
-- every listener occupies one receiver tuned to their own frequency.
+- a waterfall (view) occupies one receiver, shared by all its viewers. A configured band is
+  widened over up to four receivers side by side to its band edges while receivers are free
+  (20 m: three receivers, 14.000 to 14.350 MHz); the browser composes the segments into one
+  waterfall. Extra segments are the first thing given back when someone needs a receiver.
+- a listener inside any active waterfall is cut out of that wide stream by the CPU (shift,
+  192-tap low-pass, 192 to 16 kS/s) and costs no receiver. Only a listener outside every
+  waterfall gets a receiver of its own on the narrow stream.
 
-Channel selection happens in the FPGA, so the CPU only computes the waterfall FFT and
-demodulates 16 kS/s audio. One band plus six listeners uses about 40 % of one Cortex-A9 core.
+Receivers go by priority: station > logged-in user > guest. A client may take a receiver from
+a holder of lower priority: guests first, and among the holders of the lowest priority the one
+inactive for the longest time (last command other than the keep-alive ping; a shared waterfall
+counts as active as its most active viewer or listener). The holder keeps the connection, loses
+that waterfall (or its own receiver) and gets a notice. The listener limit works the same way. Every status message lists the active waterfalls, so the page
+marks the bands where listening costs no receiver and, when all receivers are busy, offers
+them as buttons.
+
+CPU (two Cortex-A9 cores at 667 MHz), measured with all 8 receivers on waterfalls: 41 % of
+one core without listeners, about 9.5 % per listener (5.2 % DDC, 4.2 % demodulation and
+ADPCM). Listeners run on two threads, one per core; 12 listeners keep full audio at 152 %,
+16 start to drop packets, so `max_listeners` defaults to 14. A higher-priority listener
+bumps the lowest one when the limit is reached. The waterfall averages two FFTs per line.
 
 Audio is demodulated on the device (USB, LSB, CW, AM, FM with AGC and squelch), resampled to
 8 kHz, IMA-ADPCM compressed (~32 kbit/s) and sent over a WebSocket. The browser plays it with
@@ -77,11 +93,15 @@ title = R2T2 WebSDR
 callsign = DL0XYZ
 location = Somewhere
 gain1 = 0
-band = 40m, 7100000, 1, lsb     # name, centre Hz, antenna input, default mode
+band = 40m, 7100000, 1, lsb     # name, centre Hz, antenna input, default mode[, lo, hi]
+max_listeners = 14              # listeners fed from the wide stream (CPU guard)
 ```
 
-Each band shows 192 kHz around its centre (about 186 kHz usable, the FPGA decimation filter
-rolls off at the edges).
+A band starts with 192 kHz around its centre and is widened to its edges (IARU region 1 by
+default, or `lo`, `hi` in Hz) over up to four receivers while more than one receiver is free.
+Each segment contributes about 170 kHz (the FPGA decimation filter rolls off at the edges).
+
+`r2t2sdr --no-ddc` gives every listener a receiver of its own, for comparisons.
 
 Settings changed in the web interface live in `/var/lib/r2t2sdr` (`state_dir`) and override
 the config file:
@@ -127,7 +147,10 @@ Listening and the waterfall need no account. Roles, each including the ones belo
 |---|---|
 | `admin` | everything: accounts, station, antennas, bookmarks |
 | `lesezeichen` | maintain bookmarks |
+| `station` | as `nutzer`, but first in line for receivers (external waterfall of a remote station) |
 | `nutzer` | listen and chat when the station restricts this to logged-in users |
+
+Logged-in accounts take receivers from guests, `station` takes them from everyone else.
 
 Login works without the password on the wire, also over plain http:
 
@@ -197,7 +220,7 @@ window.addEventListener("message", (e) => {
 | Path | Answer |
 |---|---|
 | `GET api/config` | version, title, callsign, location, locator, span, bins, audio rate, receivers, max. frequency, bands |
-| `GET api/status` | users, listeners, free and total receivers, active views with viewers |
+| `GET api/status` | users, listeners, free and total receivers, `active` waterfalls (see `status`) |
 
 Both return JSON with `Access-Control-Allow-Origin: *`.
 
@@ -212,7 +235,7 @@ Client to server (JSON text frames):
 | `band` | `id`: show a configured band |
 | `view` | `center` (Hz): show a free view around this frequency |
 | `tune` | `freq` (Hz), `mode` (`usb`, `lsb`, `cw`, `am`, `fm`/`nfm`), `lo`, `hi` (passband in Hz relative to `freq`) |
-| `start` / `stop` | audio on/off (allocates a receiver) |
+| `start` / `stop` | audio on/off (a receiver only outside every active waterfall) |
 | `squelch` | `level` in dBFS, `-999` = off |
 | `chat` | `text`, `name` (guests only) |
 | `challenge` | `user`, `purpose` (`login` or `passwd`) |
@@ -230,9 +253,9 @@ Server to client, JSON text frames:
 | `type` | Fields |
 |---|---|
 | `config` | as `api/config`, plus `access`, `chat`, antenna names |
-| `view` | `id`, `band` (configured band or -1), `center`, `span`, `input`, `antenna` |
-| `status` | `users`, `listeners`, `free`, `total` |
-| `audio` | `on`, `input`, `antenna` |
+| `view` | `id`, `band` (configured band or -1), `center`, `span` (one receiver), `lo`, `hi` (range shown), `input`, `antenna`, `segments` (`center`, `lo`, `hi` per receiver); `id` -1 with `reason`: no waterfall (all receivers busy or taken by a client with priority) |
+| `status` | `users`, `listeners`, `free`, `total`, `active`: per waterfall `view`, `band`, `center`, `lo`, `hi`, `segments`, `viewers`, `listeners` |
+| `audio` | `on`, `input`, `antenna`, `own` (true: own receiver, false: cut out of a waterfall) |
 | `bookmarks` | `list` of `id`, `freq`, `mode`, `name` |
 | `chat` | `who`, `guest`, `ts`, `text` |
 | `challenge` | `purpose`, `user`, `salt`, `iter`, `nonce` |
@@ -242,8 +265,9 @@ Server to client, JSON text frames:
 
 Binary frames:
 
-- `0x01 view:uint8 bins[1024]` waterfall line of view `view`, one byte per bin = dBFS + 170,
-  lowest frequency first
+- `0x01 view:uint8 segment:uint8 bins[1024]` waterfall line of one segment of view `view`
+  (192 kHz around the segment centre), one byte per bin = dBFS + 170, lowest frequency first;
+  segments are not synchronised, the client composes them by `view.segments`
 - `0x02 level:int16 pred:int16 index:uint8 adpcm[128]` 256 audio samples at 8 kHz,
   level in dBFS*10; the ADPCM state travels with every packet
 
@@ -254,8 +278,12 @@ Receive only; the R2T2 transmitter is locked in hardware.
 Tested on one R2T2 (October 2026):
 
 - frequency accuracy against broadcast carriers (< 1 ppm), waterfall and spectrum 0.1 to 61 MHz
-- WebSocket protocol, audio packet rate and ADPCM decoding, six listeners plus one waterfall
-  at about 40 % of one CPU core
+- WebSocket protocol, audio packet rate and ADPCM decoding
+- listeners from the wide stream: a broadcast carrier gives a 1 kHz tone in USB 1 kHz below
+  and in LSB 1 kHz above, same as with an own receiver; 8 waterfalls plus 12 listeners at full
+  audio rate
+- band widening (20 m over three receivers, 31 m over three), shrinking when receivers are
+  needed, priority guest < user < station with notices, full-receiver notice in the page
 - service start after reboot, dead connections dropped after 30 s
 - full page at 1440 px (dark and light) and 390 px, embedded page in an iframe including
   `window.UI`, `#freq=` and `postMessage` in both directions

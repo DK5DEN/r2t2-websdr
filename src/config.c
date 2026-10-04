@@ -23,6 +23,25 @@ static void copy(char *dst, size_t n, const char *src)
 }
 
 /* "name, centre_hz [, input [, mode]]" */
+/* IARU region 1 edges, used when a band line gives none */
+static const double band_table[][2] = {
+    { 1810000, 2000000 }, { 3500000, 3800000 }, { 5351500, 5366500 }, { 5900000, 6200000 },
+    { 7000000, 7200000 }, { 7200000, 7450000 }, { 9400000, 9900000 }, { 10100000, 10150000 },
+    { 14000000, 14350000 }, { 18068000, 18168000 }, { 21000000, 21450000 }, { 24890000, 24990000 },
+    { 26965000, 27405000 }, { 28000000, 29700000 }, { 50000000, 52000000 },
+};
+
+static void band_edges(double center, double *lo, double *hi)
+{
+    *lo = *hi = 0;
+    for (size_t i = 0; i < sizeof(band_table) / sizeof(band_table[0]); i++)
+        if (center >= band_table[i][0] && center <= band_table[i][1]) {
+            *lo = band_table[i][0];
+            *hi = band_table[i][1];
+            return;
+        }
+}
+
 static int add_band(config_t *c, char *spec)
 {
     if (c->nbands >= MAX_BANDS)
@@ -42,6 +61,8 @@ static int add_band(config_t *c, char *spec)
         case 1: b->center = atof(tok); break;
         case 2: b->input = atoi(tok); break;
         case 3: copy(b->mode, sizeof(b->mode), tok); break;
+        case 4: b->lo = atof(tok); break;
+        case 5: b->hi = atof(tok); break;
         default: break;
         }
     }
@@ -49,6 +70,8 @@ static int add_band(config_t *c, char *spec)
         return -1;
     if (b->input < 1 || b->input > 3)
         b->input = 1;
+    if (!(b->lo < b->center && b->center < b->hi))
+        band_edges(b->center, &b->lo, &b->hi);
     c->nbands++;
     return 0;
 }
@@ -82,6 +105,7 @@ void config_defaults(config_t *c)
     c->clock = 122.88e6;
     c->wf_fps = 10;
     c->max_clients = 20;
+    c->max_listeners = 14;
     copy(c->state_dir, sizeof(c->state_dir), "/var/lib/r2t2sdr");
     c->chat = 2;
 }
@@ -150,6 +174,7 @@ static int load_file(config_t *c, const char *path, int station_only)
         else if (!strcmp(k, "att2"))           c->att[1] = atoi(v);
         else if (!strcmp(k, "waterfall_fps"))  c->wf_fps = atoi(v);
         else if (!strcmp(k, "max_clients"))    c->max_clients = atoi(v);
+        else if (!strcmp(k, "max_listeners"))  c->max_listeners = atoi(v);
         else if (!strcmp(k, "band")) {
             if (add_band(c, v) < 0)
                 fprintf(stderr, "%s:%d: invalid band definition\n", path, ln);
@@ -160,6 +185,8 @@ static int load_file(config_t *c, const char *path, int station_only)
 
     if (c->max_clients < 1 || c->max_clients > MAX_CLIENTS)
         c->max_clients = MAX_CLIENTS;
+    if (c->max_listeners < 1 || c->max_listeners > MAX_CLIENTS)
+        c->max_listeners = MAX_CLIENTS;
     if (c->wf_fps < 1)
         c->wf_fps = 1;
     return 0;

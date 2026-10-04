@@ -111,11 +111,14 @@ function el(tag, attrs = {}, ...children) {
 
   const spec = $('spectrum'), wf = $('waterfall');
   const specCtx = spec.getContext('2d'), wfCtx = wf.getContext('2d');
+  // One waterfall row covers the whole view; with several receivers side by side
+  // (widened band) each segment's bins are mapped into its slice of the row.
+  const ROW = 2048;
   const hist = document.createElement('canvas');
-  hist.width = 1024;
+  hist.width = ROW;
   hist.height = 400;
   const histCtx = hist.getContext('2d');
-  const line = histCtx.createImageData(1024, 1);
+  const line = histCtx.createImageData(ROW, 1);
   function clearHistory() {
     histCtx.fillStyle = '#000';
     histCtx.fillRect(0, 0, hist.width, hist.height);
@@ -295,6 +298,30 @@ function el(tag, attrs = {}, ...children) {
     $('wfmax-wert').textContent = `${st.wfMax - 170} dB`;
   }
 
+  // per segment: which row pixels it fills and from which of its 1024 bins
+  function buildSegMaps() {
+    const lo = st.center - st.span / 2;
+    st.segMaps = (st.segs || []).map((g) => {
+      const x0 = Math.max(0, Math.floor(((g.lo - lo) / st.span) * ROW));
+      const x1 = Math.min(ROW, Math.ceil(((g.hi - lo) / st.span) * ROW));
+      const idx = new Int16Array(Math.max(0, x1 - x0));
+      for (let x = x0; x < x1; x++) {
+        const f = lo + ((x + 0.5) / ROW) * st.span;
+        idx[x - x0] = Math.max(0, Math.min(1023, Math.floor(((f - g.center) / st.cfg.span + 0.5) * 1024)));
+      }
+      return { x0, idx };
+    });
+    st.row = new Uint8Array(ROW);
+  }
+
+  function onSegment(seg, bins) {
+    const m = st.segMaps && st.segMaps[seg];
+    if (!m) return;
+    for (let i = 0; i < m.idx.length; i++) st.row[m.x0 + i] = bins[m.idx[i]];
+    // segment 0 sets the pace: one row per frame of the first receiver
+    if (seg === 0) onWaterfall(st.row.slice());
+  }
+
   function onWaterfall(bins) {
     if (st.autoFrames > 0 && --st.autoFrames === 0) autoLevels(bins);
     if (!st.smooth || st.smooth.length !== bins.length) st.smooth = Float32Array.from(bins);
@@ -319,7 +346,8 @@ function el(tag, attrs = {}, ...children) {
       k.type = 'button';
       k.className = 'btn-sm';
       k.textContent = b.name.replace(/(\d)m\b/, '$1 m');
-      k.title = `${b.name}, Wasserfall um ${(b.center / 1e6).toFixed(3)} MHz`;
+      k.dataset.title = `${b.name}, Wasserfall um ${(b.center / 1e6).toFixed(3)} MHz`;
+      k.title = k.dataset.title;
       k.dataset.band = b.id;
       k.addEventListener('click', () => { st.userBand = b.id; requestBand(b.id); });
       box.appendChild(k);
@@ -330,6 +358,38 @@ function el(tag, attrs = {}, ...children) {
   function markBand() {
     document.querySelectorAll('#baender .btn-sm').forEach((k) =>
       k.setAttribute('aria-current', String(Number(k.dataset.band) === st.viewBand)));
+    markActive();
+  }
+
+  // Bands someone is receiving right now: listening there costs no receiver.
+  function activeList() { return (st.status && st.status.active) || []; }
+
+  function activeLabel(a) {
+    if (a.band >= 0 && st.cfg.bands[a.band]) return st.cfg.bands[a.band].name.replace(/(\d)m\b/, '$1 m');
+    return `${mhzLabel(a.lo, 1e4)}–${mhzLabel(a.hi, 1e4)} MHz`;
+  }
+
+  function markActive() {
+    if (EMBED || !st.cfg) return;
+    const act = activeList();
+    document.querySelectorAll('#baender .btn-sm').forEach((k) => {
+      const a = act.find((x) => x.band === Number(k.dataset.band));
+      k.classList.toggle('sdr-aktiv', Boolean(a));
+      k.title = a ? `${k.dataset.title}. Empfänger aktiv (${a.viewers + a.listeners} dabei): hier hören kostet keinen Empfänger.`
+        : k.dataset.title;
+    });
+    const note = $('belegt');
+    const full = st.status && st.status.free === 0;
+    note.hidden = !full && st.view >= 0;
+    if (note.hidden) return;
+    // first sentence of the server's reason; the list below says the rest
+    const head = (st.view < 0 && st.noViewReason ? st.noViewReason : 'Alle Empfänger sind belegt.').split(/(?<=\.) /)[0];
+    note.replaceChildren(el('span', {}, act.length ? `${head} Ohne eigenen Empfänger hören geht hier:` : head));
+    for (const a of act) {
+      note.append(' ', el('button', { type: 'button', class: 'btn-sm', onclick: () => {
+        if (a.band >= 0) { st.userBand = a.band; requestBand(a.band); } else tuneTo(a.center, true);
+      } }, activeLabel(a)));
+    }
   }
 
   function niceStep(x) {
@@ -372,7 +432,15 @@ function el(tag, attrs = {}, ...children) {
       svg.append(n);
       return n;
     };
-    if (st.center) {
+    for (const a of activeList()) {
+      if (a.hi < lo || a.lo > hi || a.view === st.view) continue;
+      const r = add('rect', { x: Math.max(0, x(a.lo)), y: 9, height: 4, rx: 2,
+        width: Math.max(2, Math.min(W, x(a.hi)) - Math.max(0, x(a.lo))), class: 'sdr-aktiv-bereich' });
+      const t = document.createElementNS(ns, 'title');
+      t.textContent = `Empfänger aktiv: ${activeLabel(a)}`;
+      r.append(t);
+    }
+    if (st.center && st.view >= 0) {
       add('rect', { x: x(st.center - st.span / 2), y: 0, height: 7, rx: 2,
         width: Math.max(2, x(st.center + st.span / 2) - x(st.center - st.span / 2)), class: 'sdr-ausschnitt' });
     }
@@ -518,6 +586,7 @@ function el(tag, attrs = {}, ...children) {
     const ant = (st.listening && st.audioAnt) ? st.audioAnt : st.viewAnt;
     const parts = [];
     if (ant) parts.push(`Antenne <strong>${esc(ant)}</strong>`);
+    if (st.listening) parts.push(st.audioOwn ? 'Ton aus <strong>eigenem Empfänger</strong>' : 'Ton aus dem <strong>Wasserfall</strong>');
     if (st.status) parts.push(`Empfänger frei <strong>${st.status.free} von ${st.status.total}</strong>`);
     $('meter-werte').innerHTML = parts.map((p) => `<span>${p}</span>`).join('');
   }
@@ -640,14 +709,21 @@ function el(tag, attrs = {}, ...children) {
   // Waterfall follows the frequency: configured band if one covers it, otherwise a free centre.
   function ensureView(f, force) {
     if (!st.cfg || !st.ws || st.ws.readyState !== 1) return;
+    // refused for lack of receivers: wait until one is free (status) or the user picks a band
+    if (st.noView && !force) return;
     const inner = (st.span / 2) * VIEW_INNER;
-    if (!force && st.view >= 0 && Math.abs(f - st.center) < inner) return;
+    const covered = st.view >= 0 && Math.abs(f - st.center) < inner;
+    if (!force && covered) return;
+    // a band whose edges hold f (the server widens it over the whole band while
+    // receivers are free), else one whose centre is near
     let best = -1, bestDist = Infinity;
     st.cfg.bands.forEach((b) => {
       const d = Math.abs(f - b.center);
-      if (d < inner && d < bestDist) { best = b.id; bestDist = d; }
+      const inside = b.lo < b.hi && f >= b.lo && f <= b.hi;
+      if ((inside || d < (st.cfg.span / 2) * VIEW_INNER) && d < bestDist) { best = b.id; bestDist = d; }
     });
-    if (best >= 0) { requestBand(best); return; }
+    // the band view is already open but does not reach f (not widened): free view instead
+    if (best >= 0 && !(st.viewBand === best && st.view >= 0 && !covered)) { requestBand(best); return; }
     const c = Math.round(f / VIEW_GRID) * VIEW_GRID;
     if (!force && st.view >= 0 && st.viewBand < 0 && Math.abs(c - st.center) < 1) return;
     if (st.pending === `c${c}`) return;
@@ -672,12 +748,34 @@ function el(tag, attrs = {}, ...children) {
   }
 
   function onView(m) {
-    const changed = st.view !== m.id;
     st.pending = null;
+    if (m.id < 0) {
+      // no waterfall: all receivers busy, or ours was taken by someone with priority
+      st.view = -1;
+      st.viewBand = -1;
+      st.noView = true;
+      st.noViewReason = m.reason || '';
+      st.segMaps = null;
+      clearHistory();
+      if (!EMBED) { markBand(); drawRibbon(); }
+      drawWaterfall();
+      drawSpectrum();
+      return;
+    }
+    st.noView = false;
+    st.noViewReason = '';
+    const layout = JSON.stringify(m.segments || []);
+    const changed = st.view !== m.id || st.layout !== layout;
+    st.layout = layout;
     st.view = m.id;
     st.viewBand = m.band;
-    st.center = m.center;
-    st.span = m.span;
+    st.center = m.lo !== undefined ? (m.lo + m.hi) / 2 : m.center;
+    st.span = m.lo !== undefined ? m.hi - m.lo : m.span;
+    st.segs = m.segments && m.segments.length ? m.segments
+      : [{ center: m.center, lo: m.center - m.span / 2, hi: m.center + m.span / 2 }];
+    buildSegMaps();
+    // the band view may not reach the tuned frequency (band not widened yet)
+    setTimeout(() => ensureView(st.freq), 0);
     st.viewAnt = m.antenna || '';
     if (changed) clearHistory();
     if (st.userBand !== null && st.userBand === m.band) {
@@ -776,8 +874,8 @@ function el(tag, attrs = {}, ...children) {
 
   // ------------------------------------------------------------ accounts and administration
 
-  const ROLE_RANK = { nutzer: 1, lesezeichen: 2, admin: 3 };
-  const ROLE_LABEL = { nutzer: 'Nutzer', lesezeichen: 'Lesezeichen', admin: 'Admin' };
+  const ROLE_RANK = { nutzer: 1, station: 1, lesezeichen: 2, admin: 3 };
+  const ROLE_LABEL = { nutzer: 'Nutzer', station: 'Station', lesezeichen: 'Lesezeichen', admin: 'Admin' };
   const ICON_PAPIERKORB = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor"'
     + ' stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">'
     + '<path d="M4 7h16"/><path d="M10 11.5v5"/><path d="M14 11.5v5"/>'
@@ -1396,6 +1494,9 @@ function el(tag, attrs = {}, ...children) {
     st.status = m;
     $('users').textContent = `${m.users} ${m.users === 1 ? 'Besucher' : 'Besucher'} · ${m.listeners} hören`;
     updateMeterInfo();
+    // a receiver is free again: get the waterfall back
+    if (st.noView && m.free > 0) { st.noView = false; ensureView(st.freq, true); }
+    if (!EMBED) { markActive(); drawRibbon(); }
   }
 
   function setConn(on) {
@@ -1441,6 +1542,7 @@ function el(tag, attrs = {}, ...children) {
             setListening(m.on);
             if (m.on) st.wantAudio = true;
             st.audioAnt = m.antenna || '';
+            st.audioOwn = Boolean(m.own);
             updateMeterInfo();
             break;
           case 'bookmarks': onBookmarks(m.list); break;
@@ -1458,7 +1560,7 @@ function el(tag, attrs = {}, ...children) {
       }
       const u8 = new Uint8Array(ev.data);
       if (u8[0] === 1) {
-        if (u8[1] === st.view) onWaterfall(u8.subarray(2));
+        if (u8[1] === st.view) onSegment(u8[2], u8.subarray(3));
       } else if (u8[0] === 2) {
         onAudio(ev.data);
       }

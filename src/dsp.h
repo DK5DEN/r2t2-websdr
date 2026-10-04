@@ -13,10 +13,12 @@
 enum { M_USB, M_LSB, M_CW, M_AM, M_FM };
 
 /* waterfall: averaged power spectrum of one wide receiver */
+#define WF_AVG 2   /* FFTs averaged per line; the rest of the line period is skipped */
 typedef struct {
     fftwf_complex *in, *out;
     float acc[WF_FFT];
     int fill, nacc, navg;
+    int pos, period;   /* sample position within one line period */
 } wf_t;
 
 typedef struct {
@@ -45,7 +47,21 @@ typedef struct {
     int outn;
 } demod_t;
 
+/* listener from the wide stream: shift by offset, low-pass, 192 kS/s -> 16 kS/s */
+#define DDC_NT   192
+#define DDC_DEC  (FS_WIDE / FS_NARROW)
+#define DDC_BUF  (DDC_NT + 512)
+typedef struct {
+    float pr, pi, dr, di;               /* NCO phasor and step */
+    float xr[DDC_BUF], xi[DDC_BUF];     /* mixed samples, oldest first */
+    int fill, phase;
+} ddc_t;
+
 int dsp_global_init(void);
+
+void ddc_init(ddc_t *d);
+void ddc_set(ddc_t *d, double offset_hz);
+int ddc_process(ddc_t *d, const float *iq, int n, float *out, int max);
 
 int wf_init(wf_t *w, int navg);
 void wf_reset(wf_t *w);

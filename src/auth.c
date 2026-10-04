@@ -202,6 +202,7 @@ const char *role_name(int role)
     switch (role) {
     case ROLE_ADMIN:  return "admin";
     case ROLE_EDITOR: return "lesezeichen";
+    case ROLE_STATION: return "station";
     case ROLE_USER:   return "nutzer";
     default:          return "";
     }
@@ -212,6 +213,7 @@ int role_parse(const char *s)
     if (!strcmp(s, "admin"))       return ROLE_ADMIN;
     if (!strcmp(s, "lesezeichen")) return ROLE_EDITOR;
     if (!strcmp(s, "nutzer"))      return ROLE_USER;
+    if (!strcmp(s, "station"))     return ROLE_STATION;
     return ROLE_NONE;
 }
 

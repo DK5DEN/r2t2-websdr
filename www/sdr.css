@@ -122,3 +122,13 @@ table.data.sdr-kompakt .btn-stift, table.data.sdr-kompakt .btn-weg { width: 1.6r
 .sdr-kompakt .btn-stift svg, .sdr-kompakt .btn-weg svg { width: 0.85rem; height: 0.85rem; }
 #lz-box-teil .tabellen-fuss { padding: 0.3rem 0.6rem; }
 #lz-box-teil .seiten-nav button { min-width: 1.7rem; height: 1.7rem; }
+
+/* bands with an active receiver: listening there costs no receiver */
+.rm-baender .btn-sm.sdr-aktiv { position: relative; }
+.rm-baender .btn-sm.sdr-aktiv::after {
+  content: ""; position: absolute; top: 3px; right: 3px; width: 6px; height: 6px;
+  border-radius: 50%; background: var(--ok, #22c55e);
+}
+.sdr-aktiv-bereich { fill: color-mix(in srgb, var(--ok, #22c55e) 55%, transparent); }
+.note.sdr-belegt { display: flex; flex-wrap: wrap; align-items: center; gap: 0.4rem; margin: 0.6rem 0 0; }
+.note.sdr-belegt[hidden] { display: none; }

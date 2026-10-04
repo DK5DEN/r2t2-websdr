@@ -153,10 +153,16 @@ int hw_open_stream(const char *ifname)
 }
 
 /* Hand every frame of all completed blocks to cb (frame starts at the Ethernet header). */
+/*
+ * At most RING_PER_CALL blocks per call: under full load the ring is never
+ * empty, and without the limit the main loop would stop serving the network.
+ */
+#define RING_PER_CALL 4
+
 unsigned hw_stream_read(void (*cb)(const uint8_t *frame, int len))
 {
     unsigned frames = 0;
-    for (;;) {
+    for (int blk = 0; blk < RING_PER_CALL; blk++) {
         struct tpacket_block_desc *bd = (struct tpacket_block_desc *)(ring + (size_t)ring_cur * RING_BLOCK_SIZE);
         if (!(bd->hdr.bh1.block_status & TP_STATUS_USER))
             break;
