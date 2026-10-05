@@ -279,6 +279,29 @@ window.addEventListener("message", (e) => {
 });
 ```
 
+## Engine mode for afu-remote
+
+r2t2sdr can serve as the signal engine behind [afu-remote](https://afu.tools/remote): afu-remote
+handles the page, accounts, bookmarks and chat, the browser fetches waterfall and audio straight
+from r2t2sdr. Python stays out of the data path.
+
+- **Tickets.** afu-remote signs a short-lived ticket for each session with a secret shared with
+  r2t2sdr (`ticket_secret`, a file with at least 32 characters; its text is the HMAC key). The
+  browser opens `ws://<host>:8073/ws?ticket=<ticket>`. A ticket is
+  `base64url(JSON) "." base64url(HMAC-SHA256(secret, first part))` with `d` (receiver id, must
+  equal `ticket_device`), `c` (call), `r` (role), `e` (expiry, Unix time) and `n` (nonce, each
+  accepted once). Roles map as `besitzer` → admin, `verwalter` → bookmarks, `station` →
+  station, `nutzer`/`hoerer` → user, `gast` → guest. Invalid, expired or replayed tickets get an
+  error and the connection closes. Login, logout and password change do not apply to ticket
+  sessions.
+- **`ticket_only = 1`** refuses connections without a ticket; with 0 the direct access stays as
+  it is.
+- **Control socket.** `control_socket` is a Unix socket (mode 0660, group `control_group`):
+  write one JSON line, read one back. `{"cmd":"status"}` answers like the `status` message,
+  `{"cmd":"online"}` like `online`, where each entry carries `via` (`afu-remote` or `direct`).
+
+`tools/engine-setup-r2t2.sh` creates the secret and adds these keys on the device.
+
 ## HTTP API
 
 | Path | Answer |

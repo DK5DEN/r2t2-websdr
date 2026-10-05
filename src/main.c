@@ -24,8 +24,10 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <grp.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
+#include <sys/un.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -40,6 +42,7 @@
 #include "dsp.h"
 #include "hw.h"
 #include "net.h"
+#include "sha256.h"
 
 #define MAX_VIEWS      (MAX_BANDS + NRX)
 #define CLIENT_TIMEOUT 30
@@ -1097,7 +1100,7 @@ static void refresh_user(const char *name)
     const user_t *u = auth_user_find(name);
     for (int i = 0; i < MAX_CLIENTS; i++) {
         client_t *c = &cl[i];
-        if (c->fd < 0 || !c->ws || strcasecmp(c->user, name))
+        if (c->fd < 0 || !c->ws || c->via_ticket || strcasecmp(c->user, name))
             continue;
         c->role = u ? u->role : ROLE_NONE;
         if (!u)
@@ -1205,14 +1208,13 @@ static void send_act_log(client_t *c)
     send_text(c, b);
 }
 
-/* who is connected and what they do, for admins */
-static void send_online(client_t *c)
+/* who is connected and what they do, for admins and the control socket */
+static int online_json(char *b, size_t n, const client_t *c)
 {
-    static char b[32768];
     long now = now_s();
-    int o = snprintf(b, sizeof(b), "{\"type\":\"online\",\"list\":[");
+    int o = snprintf(b, n, "{\"type\":\"online\",\"list\":[");
     int first = 1;
-    for (int i = 0; i < MAX_CLIENTS && o < (int)sizeof(b) - 600; i++) {
+    for (int i = 0; i < MAX_CLIENTS && o < (int)n - 600; i++) {
         const client_t *k = &cl[i];
         if (k->fd < 0 || !k->ws)
             continue;
@@ -1227,17 +1229,26 @@ static void send_online(client_t *c)
             else
                 snprintf(view, sizeof(view), "%.3f-%.3f MHz", v->show_lo / 1e6, v->show_hi / 1e6);
         }
-        o += snprintf(b + o, sizeof(b) - o,
+        o += snprintf(b + o, n - o,
                       "%s{\"slot\":%d,\"user\":\"%s\",\"role\":\"%s\",\"guest\":\"%s\",\"ip\":\"%s\","
                       "\"since\":%ld,\"idle\":%ld,\"view\":\"%s\",\"segments\":%d,\"zoom\":%s,"
-                      "\"listening\":%s,\"freq\":%.0f,\"mode\":\"%s\",\"own\":%s,\"self\":%s}",
+                      "\"listening\":%s,\"freq\":%.0f,\"mode\":\"%s\",\"own\":%s,\"self\":%s,"
+                      "\"via\":\"%s\"}",
                       first ? "" : ",", i, user, k->user[0] ? role_name(k->role) : "", gname, ip,
                       now - k->since, now - k->last_act, view, k->view >= 0 ? views[k->view].nseg : 0,
                       k->zhi > k->zlo ? "true" : "false", k->listening ? "true" : "false", k->freq,
-                      mode_name(k->mode), k->rx >= 0 ? "true" : "false", k == c ? "true" : "false");
+                      mode_name(k->mode), k->rx >= 0 ? "true" : "false", k == c ? "true" : "false",
+                      k->via_ticket ? "afu-remote" : "direct");
         first = 0;
     }
-    snprintf(b + o, sizeof(b) - o, "]}");
+    o += snprintf(b + o, n - o, "]}");
+    return o;
+}
+
+static void send_online(client_t *c)
+{
+    static char b[32768];
+    online_json(b, sizeof(b), c);
     send_text(c, b);
 }
 
@@ -1308,6 +1319,13 @@ static int account_cmd(client_t *c, const char *cmd, const char *txt)
 {
     char name[64], s[200], proof[80], nonce[33];
     double v;
+
+    /* identity from afu-remote: no login, logout or password change here */
+    if (c->via_ticket && (!strcmp(cmd, "auth") || !strcmp(cmd, "login") || !strcmp(cmd, "logout") ||
+                          !strcmp(cmd, "challenge") || !strcmp(cmd, "passwd"))) {
+        send_login(c, NULL);
+        return 1;
+    }
 
     if (!strcmp(cmd, "challenge")) {
         char salt[33], purpose[12] = "login";
@@ -1755,6 +1773,124 @@ static void chat_cmd(client_t *c, const char *txt)
             send_chat_msg(&cl[i], m);
 }
 
+/* ---------------------------------------------------------------- afu-remote tickets */
+
+/*
+ * Engine mode: afu-remote on the station signs a short-lived ticket
+ *   base64url(JSON {"d":device,"c":call,"r":role,"e":expiry,"n":nonce}) "." base64url(HMAC-SHA256)
+ * with the secret in cfg.ticket_secret (the hex text of the file is the key, as in empfaenger.py).
+ */
+static int b64url_decode(const char *s, size_t len, uint8_t *out, size_t n)
+{
+    size_t o = 0;
+    unsigned acc = 0;
+    int bits = 0;
+    for (size_t i = 0; i < len; i++) {
+        int v, ch = (unsigned char)s[i];
+        if (ch >= 'A' && ch <= 'Z')      v = ch - 'A';
+        else if (ch >= 'a' && ch <= 'z') v = ch - 'a' + 26;
+        else if (ch >= '0' && ch <= '9') v = ch - '0' + 52;
+        else if (ch == '-')              v = 62;
+        else if (ch == '_')              v = 63;
+        else return -1;
+        acc = (acc << 6) | v;
+        bits += 6;
+        if (bits >= 8) {
+            bits -= 8;
+            if (o >= n)
+                return -1;
+            out[o++] = (acc >> bits) & 0xff;
+        }
+    }
+    return (int)o;
+}
+
+static int ticket_key(uint8_t *key, size_t n)
+{
+    FILE *f = fopen(cfg.ticket_secret, "r");
+    if (!f)
+        return -1;
+    size_t k = fread(key, 1, n, f);
+    fclose(f);
+    while (k && (key[k - 1] == '\n' || key[k - 1] == '\r' || key[k - 1] == ' ' || key[k - 1] == '\t'))
+        k--;
+    return k >= 32 ? (int)k : -1;
+}
+
+/* nonces of accepted tickets; a ticket lives 60 s, the ring holds far more than arrive in that time */
+#define NONCE_RING 512
+static struct { char n[24]; long e; } seen[NONCE_RING];
+static int seen_pos;
+
+static int ticket_seen(const char *nonce, long now)
+{
+    for (int i = 0; i < NONCE_RING; i++)
+        if (seen[i].e >= now && !strcmp(seen[i].n, nonce))
+            return 1;
+    return 0;
+}
+
+static int role_from_ticket(const char *r)
+{
+    if (!strcmp(r, "besitzer"))  return ROLE_ADMIN;
+    if (!strcmp(r, "verwalter")) return ROLE_EDITOR;
+    if (!strcmp(r, "station"))   return ROLE_STATION;
+    if (!strcmp(r, "nutzer") || !strcmp(r, "hoerer")) return ROLE_USER;
+    if (!strcmp(r, "gast"))      return ROLE_NONE;
+    return -1;
+}
+
+/* 0 = valid, identity set on c; -1 = invalid, expired or replayed */
+static int ticket_check(client_t *c)
+{
+    const char *dot = strchr(c->ticket, '.');
+    if (!cfg.ticket_secret[0] || !dot)
+        return -1;
+    uint8_t key[256], mac[32], sig[40];
+    int klen = ticket_key(key, sizeof(key));
+    if (klen < 0) {
+        logmsg("ticket: secret %s missing or too short", cfg.ticket_secret);
+        return -1;
+    }
+    size_t blen = dot - c->ticket;
+    hmac_sha256(key, klen, (const uint8_t *)c->ticket, blen, mac);
+    if (b64url_decode(dot + 1, strlen(dot + 1), sig, sizeof(sig)) != 32)
+        return -1;
+    unsigned diff = 0;
+    for (int i = 0; i < 32; i++)
+        diff |= mac[i] ^ sig[i];
+    if (diff)
+        return -1;
+
+    char body[480], dev[32], call[32], role[16], nonce[24];
+    int bl = b64url_decode(c->ticket, blen, (uint8_t *)body, sizeof(body) - 1);
+    if (bl <= 0)
+        return -1;
+    body[bl] = 0;
+    double e;
+    long now = (long)time(NULL);
+    if (!json_str(body, "d", dev, sizeof(dev)) || strcmp(dev, cfg.ticket_device) ||
+        !json_str(body, "c", call, sizeof(call)) || !json_str(body, "r", role, sizeof(role)) ||
+        !json_str(body, "n", nonce, sizeof(nonce)) || !nonce[0] || !json_num(body, "e", &e))
+        return -1;
+    int r = role_from_ticket(role);
+    if (r < 0 || (long)e < now || ticket_seen(nonce, now))
+        return -1;
+    snprintf(seen[seen_pos].n, sizeof(seen[0].n), "%s", nonce);
+    seen[seen_pos].e = (long)e;
+    seen_pos = (seen_pos + 1) % NONCE_RING;
+
+    c->via_ticket = 1;
+    c->role = r;
+    if (r >= ROLE_USER) {
+        snprintf(c->user, sizeof(c->user), "%s", call);
+    } else {
+        c->user[0] = 0;
+        snprintf(c->gname, sizeof(c->gname), "%s", call[0] ? call : "Gast");
+    }
+    return 0;
+}
+
 /* ---------------------------------------------------------------- websocket */
 
 static void on_open(client_t *c)
@@ -1770,11 +1906,24 @@ static void on_open(client_t *c)
     c->lo = -2700;
     c->hi = -300;
     c->sql = -999;
-    logmsg("client %s connected", c->ip);
+    if (c->ticket[0] || cfg.ticket_only) {
+        if (!c->ticket[0] || ticket_check(c) < 0) {
+            logmsg("client %s: ticket %s", c->ip, c->ticket[0] ? "rejected" : "missing");
+            send_error(c, "Ticket ungültig oder abgelaufen.");
+            c->closing = 1;
+            return;
+        }
+        logmsg("client %s connected via afu-remote as %s (%s)", c->ip, c->user[0] ? c->user : c->gname,
+               role_name(c->role));
+    } else {
+        logmsg("client %s connected", c->ip);
+    }
     act_log(c, "verbunden");
     static char b[8192];
     config_json(b, sizeof(b));
     send_text(c, b);
+    if (c->via_ticket && c->role)
+        send_login(c, NULL);
     send_bookmarks(c);
     send_chat_history(c);
     broadcast_status();
@@ -1888,6 +2037,82 @@ static int on_http(client_t *c, const char *path)
 }
 
 static const net_cb_t callbacks = { on_open, on_text, on_http };
+
+/* ---------------------------------------------------------------- control socket */
+
+/*
+ * Unix socket for afu-remote: one JSON line in ({"cmd":"status"} or {"cmd":"online"}),
+ * one JSON line back, then the connection closes. Access by file mode and group.
+ */
+static int control_listen(void)
+{
+    if (!cfg.control_socket[0])
+        return -1;
+    struct sockaddr_un a;
+    memset(&a, 0, sizeof(a));
+    a.sun_family = AF_UNIX;
+    if (strlen(cfg.control_socket) >= sizeof(a.sun_path)) {
+        logmsg("control socket path too long");
+        return -1;
+    }
+    strcpy(a.sun_path, cfg.control_socket);
+    int fd = socket(AF_UNIX, SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
+    if (fd < 0)
+        return -1;
+    unlink(cfg.control_socket);
+    mode_t old = umask(0177);
+    int r = bind(fd, (struct sockaddr *)&a, sizeof(a));
+    umask(old);
+    if (r < 0 || listen(fd, 8) < 0) {
+        logmsg("control socket %s: %s", cfg.control_socket, strerror(errno));
+        close(fd);
+        return -1;
+    }
+    if (cfg.control_group[0]) {
+        struct group *g = getgrnam(cfg.control_group);
+        if (g && chown(cfg.control_socket, (uid_t)-1, g->gr_gid) == 0)
+            chmod(cfg.control_socket, 0660);
+        else
+            logmsg("control socket: group %s not usable, root only", cfg.control_group);
+    }
+    logmsg("control socket %s", cfg.control_socket);
+    return fd;
+}
+
+static void control_serve(int lfd)
+{
+    static char out[32768];
+    int fd;
+    while ((fd = accept4(lfd, NULL, NULL, SOCK_CLOEXEC)) >= 0) {
+        /* afu-remote writes its line right after connecting; wait briefly, never block the loop long */
+        char in[256];
+        struct pollfd p = { fd, POLLIN, 0 };
+        int n = poll(&p, 1, 200) > 0 ? (int)read(fd, in, sizeof(in) - 1) : -1;
+        if (n > 0) {
+            in[n] = 0;
+            char cmd[16];
+            int o;
+            if (!json_str(in, "cmd", cmd, sizeof(cmd)))
+                o = snprintf(out, sizeof(out), "{\"type\":\"error\",\"msg\":\"cmd missing\"}");
+            else if (!strcmp(cmd, "status"))
+                o = status_json(out, sizeof(out) - 1);
+            else if (!strcmp(cmd, "online"))
+                o = online_json(out, sizeof(out) - 1, NULL);
+            else
+                o = snprintf(out, sizeof(out), "{\"type\":\"error\",\"msg\":\"unknown cmd\"}");
+            if (o > (int)sizeof(out) - 2)
+                o = sizeof(out) - 2;
+            out[o++] = '\n';
+            for (int w = 0; w < o;) {
+                int k = (int)write(fd, out + w, o - w);
+                if (k <= 0)
+                    break;
+                w += k;
+            }
+        }
+        close(fd);
+    }
+}
 
 static void client_close(client_t *c)
 {
@@ -2311,8 +2536,9 @@ int main(int argc, char **argv)
         return 1;
     logmsg("r2t2sdr %s listening on port %d, %d bands, www %s", VERSION, cfg.port, cfg.nbands, cfg.www);
 
-    struct pollfd pfd[2 + MAX_CLIENTS];
-    int map[2 + MAX_CLIENTS];
+    int cfd = control_listen();
+    struct pollfd pfd[3 + MAX_CLIENTS];
+    int map[3 + MAX_CLIENTS];
     time_t last_status = time(NULL), last_stats = last_status, last_tick = last_status;
     unsigned long npkt = 0;
 
@@ -2320,6 +2546,7 @@ int main(int argc, char **argv)
         int n = 0;
         pfd[n].fd = lfd; pfd[n].events = POLLIN; n++;
         pfd[n].fd = sfd; pfd[n].events = POLLIN; n++;
+        pfd[n].fd = cfd; pfd[n].events = POLLIN; n++;  /* -1 is ignored by poll */
         for (int i = 0; i < MAX_CLIENTS; i++) {
             if (cl[i].fd < 0)
                 continue;
@@ -2376,7 +2603,13 @@ int main(int argc, char **argv)
             }
         }
 
-        for (int k = 2; k < n; k++) {
+        if (cfd >= 0 && (pfd[2].revents & POLLIN)) {
+            dsp_lock();
+            control_serve(cfd);
+            dsp_unlock();
+        }
+
+        for (int k = 3; k < n; k++) {
             client_t *c = &cl[map[k]];
             if (c->fd != pfd[k].fd)
                 continue;
@@ -2444,5 +2677,9 @@ int main(int argc, char **argv)
         client_close(&cl[i]);
     close(lfd);
     close(sfd);
+    if (cfd >= 0) {
+        close(cfd);
+        unlink(cfg.control_socket);
+    }
     return 0;
 }

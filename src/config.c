@@ -106,6 +106,7 @@ void config_defaults(config_t *c)
     c->wf_fps = 10;
     c->max_clients = 48;
     c->max_listeners = 30;
+    copy(c->ticket_device, sizeof(c->ticket_device), "sdr");
     copy(c->state_dir, sizeof(c->state_dir), "/var/lib/r2t2sdr");
     c->chat = 2;
 }
@@ -176,6 +177,11 @@ static int load_file(config_t *c, const char *path, int station_only)
         else if (!strcmp(k, "waterfall_fps"))  c->wf_fps = atoi(v);
         else if (!strcmp(k, "max_clients"))    c->max_clients = atoi(v);
         else if (!strcmp(k, "max_listeners"))  c->max_listeners = atoi(v);
+        else if (!strcmp(k, "ticket_secret"))  copy(c->ticket_secret, sizeof(c->ticket_secret), v);
+        else if (!strcmp(k, "ticket_device"))  copy(c->ticket_device, sizeof(c->ticket_device), v);
+        else if (!strcmp(k, "ticket_only"))    c->ticket_only = atoi(v);
+        else if (!strcmp(k, "control_socket")) copy(c->control_socket, sizeof(c->control_socket), v);
+        else if (!strcmp(k, "control_group"))  copy(c->control_group, sizeof(c->control_group), v);
         else if (!strcmp(k, "band")) {
             if (add_band(c, v) < 0)
                 fprintf(stderr, "%s:%d: invalid band definition\n", path, ln);

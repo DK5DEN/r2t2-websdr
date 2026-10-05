@@ -26,6 +26,8 @@ typedef struct client {
     long last_act;     /* monotonic seconds of the last command other than ping */
     long since;        /* monotonic seconds when the WebSocket opened */
     char gname[32];    /* name a guest gave in the chat */
+    char ticket[640];  /* ?ticket= of the WebSocket request (afu-remote), checked in on_open */
+    int via_ticket;    /* identity came from an afu-remote ticket */
     double log_freq;   /* activity log: last logged listening frequency ... */
     long log_t;        /* ... and when */
 

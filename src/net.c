@@ -289,8 +289,20 @@ static int handle_http(client_t *c, const char *www, const net_cb_t *cb)
         return 0;
     }
     char *q = strchr(path, '?');
-    if (q)
+    c->ticket[0] = 0;
+    if (q) {
         *q = 0;
+        /* an afu-remote ticket travels as ?ticket=<base64url>.<base64url> */
+        const char *t = strstr(q + 1, "ticket=");
+        if (t && (t == q + 1 || t[-1] == '&')) {
+            t += 7;
+            size_t n = strspn(t, "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_.");
+            if (n < sizeof(c->ticket)) {
+                memcpy(c->ticket, t, n);
+                c->ticket[n] = 0;
+            }
+        }
+    }
     if (strcmp(method, "GET")) {
         http_error(c, 405, "Method Not Allowed");
         return 0;

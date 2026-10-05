@@ -29,6 +29,12 @@ typedef struct {
     int access;           /* 0 = everyone may listen, 1 = only logged-in users */
     int chat;             /* 0 = off, 1 = logged-in users, 2 = everyone */
     int log;              /* activity log in state_dir/activity.log, 0 = off */
+    /* engine mode for afu-remote: sessions with a ticket signed by the station */
+    char ticket_secret[256];  /* file with the shared secret, "" = no tickets */
+    char ticket_device[24];   /* receiver id the tickets must name */
+    int ticket_only;          /* 1: WebSocket only with a valid ticket */
+    char control_socket[256]; /* Unix socket for afu-remote (status, online), "" = off */
+    char control_group[32];   /* group that may use it, "" = root only */
     band_cfg_t bands[MAX_BANDS];
     int nbands;
 } config_t;
