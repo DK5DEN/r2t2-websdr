@@ -38,7 +38,8 @@ typedef struct client {
     char nonce_user[32];
     long nonce_t;
     int view;          /* waterfall view, -1 = none */
-    int rx;            /* own receiver for audio (narrow stream), -1 = none */
+    int rx;            /* own receiver for audio, -1 = none */
+    double own_nco;    /* its NCO (the listener sits 20 kHz below), 0 = not set */
     int dview, dseg;   /* or: view segment whose wide stream feeds the audio, -1 = none */
     fclis_t fc;        /* its part of the segment's fast convolution */
     /* audio packets made by the listener thread, sent by the main loop */

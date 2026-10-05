@@ -10,8 +10,8 @@ internal `rad0` interface (Ethertype `0x7232`):
 
 | Stream | Rate per receiver | Used for |
 |---|---|---|
-| narrow (tag 1) | 16 kS/s | audio of a listener outside every waterfall |
-| wide (tag 2) | 192 kS/s | waterfall, and audio of listeners inside it |
+| narrow (tag 1) | 16 kS/s | not used (see below) |
+| wide (tag 2) | 192 kS/s | waterfall and all audio |
 
 `r2t2sdr` treats the eight receivers as a pool:
 
@@ -20,8 +20,14 @@ internal `rad0` interface (Ethertype `0x7232`):
   (20 m: three receivers, 14.000 to 14.350 MHz); the browser composes the segments into one
   waterfall. Extra segments are the first thing given back when someone needs a receiver.
 - a listener inside any active waterfall is cut out of that wide stream by the CPU and costs
-  no receiver. Only a listener outside every waterfall gets a receiver of its own on the
-  narrow stream.
+  no receiver. Only a listener outside every waterfall (or on another antenna) gets a
+  receiver of its own; its wide stream is used like a private segment, with the NCO 20 kHz
+  off the listener (away from the DC spur) and moved only when the listener leaves +-60 kHz.
+
+The narrow stream is ignored: in this FPGA build it does not match its receiver (correlated
+against the wide stream of every receiver, decimated to 16 kS/s, in both I/Q orders: no
+match; listening on it gave wrong pitches). `tools/streamcap.c` shows frame rates, tags and
+these correlations.
 
 Listeners are cut out by fast convolution (overlap-save), in two stages:
 

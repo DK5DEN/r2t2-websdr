@@ -909,10 +909,22 @@ static void listener_route(client_t *c, int may_alloc)
             }
             c->rx = rx;
             rx_client[rx] = (int)(c - cl);
+            c->own_nco = 0;
         }
         in = c->ant_pref ? c->ant_pref : input_for(c->freq);
         hw_set_input(c->rx, in);
-        hw_set_freq(c->rx, f);
+        /*
+         * The own receiver's wide stream is used like a private segment (the FPGA's narrow
+         * stream does not match its receiver, see tools/streamcap). The NCO sits 20 kHz
+         * off the listener, away from the DC spur, and only moves when the listener leaves
+         * +-60 kHz around it: tuning within that range just shifts the cut-out.
+         */
+        if (!c->own_nco || fabs(f - c->own_nco) > 60000) {
+            c->own_nco = f + 20000 < cfg.clock / 2 - FS_WIDE / 2 ? f + 20000 : f - 20000;
+            hw_set_freq(c->rx, c->own_nco);
+            rx_gen[c->rx]++;
+        }
+        fc_set(&c->fc, f - c->own_nco);
     }
     demod_set(&c->dm, c->mode, lo, hi);
     if (in != c->input) {
@@ -974,6 +986,7 @@ static void listener_stop(client_t *c)
         rx_client[c->rx] = -1;
         c->rx = -1;
     }
+    c->own_nco = 0;
     int dv = c->dview;
     c->dview = c->dseg = -1;
     c->listening = 0;
@@ -1905,6 +1918,26 @@ static void client_close(client_t *c)
 
 /* ---------------------------------------------------------------- stream */
 
+/* hand one packet of a receiver's wide stream to its listener thread (rx % NWORK) */
+static void push_block(int rx, int view, int seg, const float *iq, int per)
+{
+    worker_t *wk = &work[rx % NWORK];
+    unsigned h = wk->head;
+    if (h - __atomic_load_n(&wk->tail, __ATOMIC_ACQUIRE) >= BLK_RING) {
+        wk->drops++;
+        return;
+    }
+    blk_t *b = &wk->ring[h % BLK_RING];
+    b->view = (int16_t)view;
+    b->seg = (int16_t)seg;
+    b->n = (int16_t)per;
+    b->rx = (int16_t)rx;
+    b->seq = rx_seq[rx];
+    b->gen = rx_gen[rx];
+    memcpy(b->iq, iq, 2 * per * sizeof(float));
+    __atomic_store_n(&wk->head, h + 1, __ATOMIC_RELEASE);
+}
+
 static inline float s24(uint32_t w)
 {
     return (float)((int32_t)(w << 8) >> 8) * (1.0f / 8388608.0f);
@@ -1920,7 +1953,6 @@ static void on_packet(const uint8_t *buf, int len)
     static float iq[NRX][2 * 128];
     static uint8_t frame[3 + WF_BINS];
     static uint8_t zf[7 + ZOOM_ROW];
-    static uint8_t apkt[8 + AUDIO_BLOCK];
 
     if (len <= 16)
         return;
@@ -1933,8 +1965,8 @@ static void on_packet(const uint8_t *buf, int len)
 
     int need[NRX], any = 0;
     for (int rx = 0; rx < NRX; rx++) {
-        need[rx] = stream == 2 ? rx_view[rx] >= 0 : rx_client[rx] >= 0;
-        if (need[rx] && stream == 2) {
+        need[rx] = stream == 2 && (rx_view[rx] >= 0 || rx_client[rx] >= 0);
+        if (need[rx] && rx_view[rx] >= 0) {
             /* a waterfall without listeners uses ~2 of ~5 FFT lengths per line: in the
                rest its samples are not even unpacked (~4 % of a core with 8 waterfalls) */
             int v = rx_view[rx], sg = rx_seg[rx], lis = 0;
@@ -1961,7 +1993,13 @@ static void on_packet(const uint8_t *buf, int len)
     for (int rx = 0; rx < NRX; rx++) {
         if (!need[rx])
             continue;
-        if (stream == 2) {
+        if (rx_view[rx] < 0) {
+            /* own receiver of a listener: its wide stream to the listener thread */
+            rx_seq[rx]++;
+            push_block(rx, -1, -1, iq[rx], per);
+            continue;
+        }
+        {
             int v = rx_view[rx], sg = rx_seg[rx];
             /* frame: 1, view, segment, bins */
             if (wf_push(&views[v].wf[sg], iq[rx], per, frame + 3)) {
@@ -2007,31 +2045,8 @@ static void on_packet(const uint8_t *buf, int len)
             int want = 0;
             for (int i = 0; i < MAX_CLIENTS && !want; i++)
                 want = cl[i].fd >= 0 && cl[i].listening && cl[i].dview == v && cl[i].dseg == sg;
-            if (want) {
-                worker_t *wk = &work[rx % NWORK];
-                unsigned h = wk->head;
-                blk_t *b = &wk->ring[h % BLK_RING];
-                if (h - __atomic_load_n(&wk->tail, __ATOMIC_ACQUIRE) >= BLK_RING) {
-                    wk->drops++;
-                    b = NULL;
-                }
-                if (b) {
-                b->view = (int16_t)v;
-                b->seg = (int16_t)sg;
-                b->n = (int16_t)per;
-                b->rx = (int16_t)rx;
-                b->seq = rx_seq[rx];
-                b->gen = rx_gen[rx];
-                memcpy(b->iq, iq[rx], 2 * per * sizeof(float));
-                __atomic_store_n(&wk->head, h + 1, __ATOMIC_RELEASE);
-                }
-            }
-        } else {
-            client_t *c = &cl[rx_client[rx]];
-            demod_process(&c->dm, iq[rx], per);
-            int n;
-            while ((n = demod_packet(&c->dm, apkt)) > 0)
-                net_ws_send(c, 2, apkt, n, 1);
+            if (want)
+                push_block(rx, v, sg, iq[rx], per);
         }
     }
 }
@@ -2066,7 +2081,9 @@ static void *listener_thread(void *arg)
             ws->fc.ready = 0;
             for (int i = 0; i < MAX_CLIENTS; i++) {
                 client_t *c = &cl[i];
-                if (c->fd < 0 || !c->listening || c->dview != b->view || c->dseg != b->seg)
+                if (c->fd < 0 || !c->listening)
+                    continue;
+                if (b->view >= 0 ? (c->dview != b->view || c->dseg != b->seg) : c->rx != b->rx)
                     continue;
                 int m = fc_out(&ws->fc, &c->fc, nb);
                 demod_process(&c->dm, nb, m);
