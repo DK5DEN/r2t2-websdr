@@ -363,8 +363,10 @@ Binary frames:
   segments are not synchronised, the client composes them by `view.segments`
 - `0x03 view:uint8 segment:uint8 x0:uint16 n:uint16 bins[n]` zoomed waterfall: points
   `x0 .. x0+n-1` of a 2048-point line over the `zoom` range, taken from this segment's
-  4096-point FFT (max of the bins a point covers, ~47 Hz resolution); the line is complete when
-  the lowest segment inside the range has arrived
+  FFT (max of the bins a point covers); the line is complete when the lowest segment inside the
+  range has arrived. Normally 4096 points (~47 Hz); while a client zooms in deeper the segment
+  switches to up to 32768 points (5.9 Hz, fewer lines per second), `config.zoomMin` says how
+  narrow a `zoom` range may be
 - `0x02 level:int16 pred:int16 index:uint8 adpcm[128]` 256 audio samples at 8 kHz,
   level in dBFS*10; the ADPCM state travels with every packet
 

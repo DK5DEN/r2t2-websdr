@@ -1,4 +1,5 @@
 #include <math.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "dsp.h"
@@ -13,6 +14,11 @@
 #define AGC_FLOOR   1e-6f
 
 static fftwf_plan wf_plan;
+/* larger waterfall FFTs for deep zoom, made on first use: index log2(n / WF_FFT) */
+#define WF_NBIG 4
+static fftwf_plan wf_big_plan[WF_NBIG];
+static float *wf_big_win[WF_NBIG];
+static float wf_big_norm[WF_NBIG];
 static fftwf_plan fc_plan_f, fc_plan_i, cf_plan_f, cf_plan_i;   /* FFTW_UNALIGNED: any buffer */
 static void fc_global_init(void);
 static float wf_win[WF_FFT];
@@ -60,16 +66,86 @@ int dsp_global_init(void)
 
 /* ---------------------------------------------------------------- waterfall */
 
+static int big_index(int n)
+{
+    int i = 0;
+    while ((WF_FFT << i) < n && i < WF_NBIG - 1)
+        i++;
+    return i;
+}
+
+/* plan and window of an n-point FFT (WF_FFT < n <= WF_FFT_MAX); 0 if out of memory */
+static int big_ready(int n, fftwf_complex *in, fftwf_complex *out)
+{
+    int i = big_index(n);
+    if (wf_big_plan[i])
+        return 1;
+    float *win = malloc(sizeof(float) * n);
+    if (!win)
+        return 0;
+    /* FFTW_ESTIMATE: measuring a 32768-point plan would stall the stream for seconds */
+    wf_big_plan[i] = fftwf_plan_dft_1d(n, in, out, FFTW_FORWARD, FFTW_ESTIMATE | FFTW_UNALIGNED);
+    if (!wf_big_plan[i]) {
+        free(win);
+        return 0;
+    }
+    double sum = 0;
+    for (int k = 0; k < n; k++) {
+        double x = 2 * M_PI * k / (n - 1);
+        win[k] = (float)(0.35875 - 0.48829 * cos(x) + 0.14128 * cos(2 * x) - 0.01168 * cos(3 * x));
+        sum += win[k];
+    }
+    wf_big_win[i] = win;
+    wf_big_norm[i] = (float)(1.0 / (sum * sum));
+    return 1;
+}
+
 int wf_init(wf_t *w, int navg)
 {
     w->in = fftwf_malloc(sizeof(fftwf_complex) * WF_FFT);
     w->out = fftwf_malloc(sizeof(fftwf_complex) * WF_FFT);
     /* one line every navg FFT lengths, of which WF_AVG are computed:
        with 8 receivers on waterfalls the FFTs were most of the CPU load */
-    w->period = (navg < 1 ? 1 : navg) * WF_FFT;
-    w->navg = navg < WF_AVG ? (navg < 1 ? 1 : navg) : WF_AVG;
+    w->base_period = (navg < 1 ? 1 : navg) * WF_FFT;
+    w->base_navg = navg < WF_AVG ? (navg < 1 ? 1 : navg) : WF_AVG;
+    w->period = w->base_period;
+    w->navg = w->base_navg;
+    w->n = w->want = WF_FFT;
+    w->bin = w->bout = NULL;
+    w->bacc = w->bspec = NULL;
+    w->line = w->spec;
+    w->nline = WF_FFT;
     wf_reset(w);
     return (w->in && w->out) ? 0 : -1;
+}
+
+/* at the start of a line period: take the FFT size the main loop asked for */
+static void wf_size(wf_t *w)
+{
+    int n = w->want;
+    if (n < WF_FFT || n > WF_FFT_MAX || (n & (n - 1)))
+        n = WF_FFT;
+    if (n > WF_FFT && !w->bin) {
+        w->bin = fftwf_malloc(sizeof(fftwf_complex) * WF_FFT_MAX);
+        w->bout = fftwf_malloc(sizeof(fftwf_complex) * WF_FFT_MAX);
+        w->bacc = calloc(WF_FFT_MAX, sizeof(float));
+        w->bspec = calloc(WF_FFT_MAX, sizeof(float));
+        if (!w->bin || !w->bout || !w->bacc || !w->bspec) {
+            fftwf_free(w->bin);
+            fftwf_free(w->bout);
+            free(w->bacc);
+            free(w->bspec);
+            w->bin = w->bout = NULL;
+            w->bacc = w->bspec = NULL;
+        }
+    }
+    if (n > WF_FFT && (!w->bin || !big_ready(n, w->bin, w->bout)))
+        n = WF_FFT;
+    if (n == w->n)
+        return;
+    w->n = n;
+    w->navg = n == WF_FFT ? w->base_navg : 1;
+    w->period = n == WF_FFT ? w->base_period : (n > w->base_period ? n : w->base_period);
 }
 
 void wf_reset(wf_t *w)
@@ -78,6 +154,8 @@ void wf_reset(wf_t *w)
     w->nacc = 0;
     w->pos = 0;
     memset(w->acc, 0, sizeof(w->acc));
+    if (w->bacc)
+        memset(w->bacc, 0, sizeof(float) * WF_FFT_MAX);
 }
 
 static uint8_t wf_byte(float p)
@@ -93,7 +171,7 @@ static uint8_t wf_byte(float p)
  */
 int wf_skip(wf_t *w, int n)
 {
-    if (w->pos < w->navg * WF_FFT || w->pos + n > w->period)
+    if (w->pos < w->navg * w->n || w->pos + n > w->period)
         return 0;
     w->pos += n;
     if (w->pos >= w->period)
@@ -105,15 +183,19 @@ int wf_skip(wf_t *w, int n)
    The full-resolution line stays in spec for zoomed viewers. */
 static void wf_frame(wf_t *w, uint8_t *frame)
 {
-    const int r = WF_FFT / WF_BINS;
-    const float scale = wf_norm / w->navg;
-    for (int k = 0; k < WF_FFT; k++)
-        w->spec[k] = w->acc[(k + WF_FFT / 2) & (WF_FFT - 1)] * scale;
+    const int n = w->n, r = n / WF_BINS;
+    const int big = n > WF_FFT;
+    float *acc = big ? w->bacc : w->acc, *spec = big ? w->bspec : w->spec;
+    const float scale = (big ? wf_big_norm[big_index(n)] : wf_norm) / w->navg;
+    for (int k = 0; k < n; k++)
+        spec[k] = acc[(k + n / 2) & (n - 1)] * scale;
+    w->line = spec;
+    w->nline = n;
     for (int b = 0; b < WF_BINS; b++) {
         float m = 0;
         for (int j = 0; j < r; j++)
-            if (w->spec[b * r + j] > m)
-                m = w->spec[b * r + j];
+            if (spec[b * r + j] > m)
+                m = spec[b * r + j];
         frame[b] = wf_byte(m);
     }
 }
@@ -125,18 +207,21 @@ static void wf_frame(wf_t *w, uint8_t *frame)
  */
 void wf_zoom(const wf_t *w, double rel0, double df, int n, uint8_t *out)
 {
-    const double bpf = (double)WF_FFT / FS_WIDE;   /* bins per Hz */
+    const int nb = w->nline;
+    const float *spec = w->line;
+    const double bpf = (double)nb / FS_WIDE;   /* bins per Hz */
     for (int i = 0; i < n; i++) {
-        double c = (rel0 + i * df) * bpf + WF_FFT / 2;
+        double c = (rel0 + i * df) * bpf + nb / 2;
         int b0 = (int)floor(c - df * bpf / 2), b1 = (int)floor(c + df * bpf / 2);
         if (b1 < b0)
             b1 = b0;
         if (b0 < 0) b0 = 0;
-        if (b1 > WF_FFT - 1) b1 = WF_FFT - 1;
+        if (b1 > nb - 1) b1 = nb - 1;
+        if (b0 > nb - 1) b0 = nb - 1;
         float m = 0;
         for (int k = b0; k <= b1; k++)
-            if (w->spec[k] > m)
-                m = w->spec[k];
+            if (spec[k] > m)
+                m = spec[k];
         out[i] = wf_byte(m);
     }
 }
@@ -145,26 +230,32 @@ int wf_push(wf_t *w, const float *iq, int n, uint8_t *frame)
 {
     int ready = 0;
     for (int i = 0; i < n; i++) {
-        int skip = w->pos >= w->navg * WF_FFT;
+        if (w->pos == 0 && w->fill == 0 && w->nacc == 0 && w->want != w->n)
+            wf_size(w);
+        const int big = w->n > WF_FFT, nn = w->n;
+        fftwf_complex *in = big ? w->bin : w->in, *out = big ? w->bout : w->out;
+        const float *win = big ? wf_big_win[big_index(nn)] : wf_win;
+        float *acc = big ? w->bacc : w->acc;
+        int skip = w->pos >= w->navg * nn;
         if (++w->pos >= w->period)
             w->pos = 0;
         if (skip)
             continue;
         int f = w->fill;
-        w->in[f][0] = iq[2 * i] * wf_win[f];
-        w->in[f][1] = iq[2 * i + 1] * wf_win[f];
-        if (++w->fill < WF_FFT)
+        in[f][0] = iq[2 * i] * win[f];
+        in[f][1] = iq[2 * i + 1] * win[f];
+        if (++w->fill < nn)
             continue;
 
         w->fill = 0;
-        fftwf_execute_dft(wf_plan, w->in, w->out);
-        for (int k = 0; k < WF_FFT; k++)
-            w->acc[k] += w->out[k][0] * w->out[k][0] + w->out[k][1] * w->out[k][1];
+        fftwf_execute_dft(big ? wf_big_plan[big_index(nn)] : wf_plan, in, out);
+        for (int k = 0; k < nn; k++)
+            acc[k] += out[k][0] * out[k][0] + out[k][1] * out[k][1];
         if (++w->nacc >= w->navg) {
             wf_frame(w, frame);
             ready = 1;
             w->nacc = 0;
-            memset(w->acc, 0, sizeof(w->acc));
+            memset(acc, 0, sizeof(float) * nn);
         }
     }
     return ready;

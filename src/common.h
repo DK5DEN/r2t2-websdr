@@ -5,6 +5,8 @@
 #define FS_NARROW    16000    /* per-receiver rate of the narrow (audio) stream */
 #define FS_WIDE      192000   /* per-receiver rate of the wide (waterfall) stream */
 #define WF_FFT       4096     /* waterfall FFT size */
+#define WF_FFT_MAX   32768    /* zoomed in deep: up to this size (5.9 Hz per bin), see wf_t.want */
+#define ZOOM_MIN     1000     /* narrowest zoom range a client may ask for, in Hz */
 #define WF_BINS      1024     /* bins sent to the browser per waterfall line */
 #define ZOOM_ROW     2048     /* points of a zoomed waterfall line (whole shown range) */
 #define AUDIO_RATE   8000     /* audio rate sent to the browser */

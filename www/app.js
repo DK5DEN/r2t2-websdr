@@ -338,7 +338,9 @@ function el(tag, attrs = {}, ...children) {
 
   // ------------------------------------------------------------ zoom
 
-  const ZOOM_MIN_SPAN = 10000;   // narrowest shown range in Hz (the FFT resolves ~47 Hz)
+  // narrowest shown range in Hz: the engine says how deep it zooms (zoomMin, 0.3.1+: a larger
+  // FFT while someone zooms in, down to 5.9 Hz); older engines resolve only ~47 Hz
+  const zoomMinSpan = () => (st.cfg && st.cfg.zoomMin) || 10000;
 
   function zoomFactor() { return st.vHi > st.vLo ? (st.vHi - st.vLo) / st.span : 1; }
 
@@ -362,7 +364,7 @@ function el(tag, attrs = {}, ...children) {
   function setShown(lo, span) {
     const vSpan = st.vHi - st.vLo;
     if (!(vSpan > 0)) return;
-    span = Math.max(Math.min(ZOOM_MIN_SPAN, vSpan), Math.min(vSpan, span));
+    span = Math.max(Math.min(zoomMinSpan(), vSpan), Math.min(vSpan, span));
     lo = Math.max(st.vLo, Math.min(st.vHi - span, lo));
     const oldLo = st.center - st.span / 2, oldSpan = st.span;
     if (Math.abs(lo - oldLo) < 1 && Math.abs(span - oldSpan) < 1) return;

@@ -24,6 +24,19 @@ typedef struct {
     int fill, nacc, navg;
     int pos, period;   /* sample position within one line period */
     float spec[WF_FFT];  /* last line, power per FFT bin, lowest frequency first (for zoom) */
+    /*
+     * Zoomed in deep, a client needs more than the ~47 Hz of WF_FFT: the main loop sets
+     * want (a power of two up to WF_FFT_MAX) after every line, and the next line period
+     * uses an FFT of that size, one per line (fewer lines per second while it lasts).
+     * The normal 1024-bin line is made from the same FFT. Buffers for it are allocated
+     * the first time a segment needs them.
+     */
+    int n, want;                     /* FFT size of the current line period, and the next */
+    int base_navg, base_period;      /* navg and period at WF_FFT */
+    fftwf_complex *bin, *bout;       /* WF_FFT_MAX buffers, NULL until first used */
+    float *bacc, *bspec;
+    const float *line;               /* power of the last finished line, nline bins */
+    int nline;
 } wf_t;
 
 typedef struct {

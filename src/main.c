@@ -46,7 +46,7 @@
 
 #define MAX_VIEWS      (MAX_BANDS + NRX)
 #define CLIENT_TIMEOUT 30
-#define VERSION        "0.3.0"
+#define VERSION        "0.3.1"
 #define LOGIN_FAILS    5      /* failed logins per address ... */
 #define LOGIN_LOCK_S   60     /* ... before it is locked for this long */
 
@@ -418,10 +418,10 @@ static int config_json(char *b, size_t n)
                      "{\"type\":\"config\",\"version\":\"%s\",\"title\":\"%s\",\"callsign\":\"%s\","
                      "\"location\":\"%s\",\"locator\":\"%s\",\"span\":%d,\"bins\":%d,\"audioRate\":%d,"
                      "\"receivers\":%d,\"maxFreq\":%.0f,\"access\":\"%s\",\"chat\":\"%s\","
-                     "\"antennas\":[\"%s\",\"%s\"],\"bands\":[",
+                     "\"zoomMin\":%d,\"antennas\":[\"%s\",\"%s\"],\"bands\":[",
                      VERSION, t, cs, loc, lc, FS_WIDE, WF_BINS, AUDIO_RATE, NRX, cfg.clock / 2,
                      cfg.access ? "login" : "open", cfg.chat == 0 ? "off" : cfg.chat == 1 ? "login" : "all",
-                     a1, a2);
+                     ZOOM_MIN, a1, a2);
     for (int i = 0; i < cfg.nbands && o < (int)n - 200; i++) {
         char nm[80];
         json_escape(nm, sizeof(nm), cfg.bands[i].name);
@@ -2003,7 +2003,7 @@ static void on_text(client_t *c, char *txt, size_t len)
     } else if (!strcmp(cmd, "zoom")) {
         /* the part of the view this client shows; without lo/hi the whole view */
         double lo, hi;
-        if (json_num(txt, "lo", &lo) && json_num(txt, "hi", &hi) && hi - lo >= 2000 && lo > 0) {
+        if (json_num(txt, "lo", &lo) && json_num(txt, "hi", &hi) && hi - lo >= ZOOM_MIN / 2 && lo > 0) {
             c->zlo = lo;
             c->zhi = hi;
         } else {
@@ -2143,6 +2143,28 @@ static void client_close(client_t *c)
 
 /* ---------------------------------------------------------------- stream */
 
+/*
+ * FFT size the next line of a segment [slo, shi] of view v needs: a client zoomed in
+ * there should get about one bin per four points of its ZOOM_ROW line, up to WF_FFT_MAX
+ * (5.9 Hz). The deepest zoom wins; nobody zoomed in: WF_FFT.
+ */
+static int zoom_fft(int v, double slo, double shi)
+{
+    int n = WF_FFT;
+    for (int i = 0; i < MAX_CLIENTS; i++) {
+        const client_t *c = &cl[i];
+        if (c->fd < 0 || !c->ws || c->view != v || c->zhi <= c->zlo || c->zhi <= slo || c->zlo >= shi)
+            continue;
+        double bin = (c->zhi - c->zlo) / ZOOM_ROW * 4;   /* widest bin that still looks fine */
+        int k = WF_FFT;
+        while (k < WF_FFT_MAX && (double)FS_WIDE / k > bin)
+            k *= 2;
+        if (k > n)
+            n = k;
+    }
+    return n;
+}
+
 /* hand one packet of a receiver's wide stream to its listener thread (rx % NWORK) */
 static void push_block(int rx, int view, int seg, const float *iq, int per)
 {
@@ -2231,9 +2253,10 @@ static void on_packet(const uint8_t *buf, int len)
                 frame[0] = 1;
                 frame[1] = (uint8_t)v;
                 frame[2] = (uint8_t)sg;
-                const view_t *vw = &views[v];
+                view_t *vw = &views[v];
                 double half = (vw->show_hi - vw->show_lo) / vw->nseg / 2;
                 double slo = vw->seg_center[sg] - half, shi = vw->seg_center[sg] + half;
+                vw->wf[sg].want = zoom_fft(v, slo, shi);
                 for (int i = 0; i < MAX_CLIENTS; i++) {
                     client_t *c = &cl[i];
                     if (c->fd < 0 || !c->ws || c->view != v)
