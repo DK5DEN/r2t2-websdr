@@ -120,7 +120,7 @@ sudo systemctl enable --now r2t2sdr
 `/etc/r2t2sdr.conf` if it does not exist yet and adds `r2t2sdr.service`. The service conflicts with
 the original `radiowatch.service` (`r2t2srv`/`r2t2client`), which must not run at the same time.
 
-The web interface is served on port 8073.
+The web interface is served on port 8074 (8073 belongs to afu-remote, which tunnels it).
 
 Create the first administrator on the device (asks for the password, the running service
 picks the account up without a restart):
@@ -287,7 +287,7 @@ from r2t2sdr. Python stays out of the data path.
 
 - **Tickets.** afu-remote signs a short-lived ticket for each session with a secret shared with
   r2t2sdr (`ticket_secret`, a file with at least 32 characters; its text is the HMAC key). The
-  browser opens `ws://<host>:8073/ws?ticket=<ticket>`. A ticket is
+  browser opens `ws://<host>:8074/ws?ticket=<ticket>`. A ticket is
   `base64url(JSON) "." base64url(HMAC-SHA256(secret, first part))` with `d` (receiver id, must
   equal `ticket_device`), `c` (call), `r` (role), `e` (expiry, Unix time) and `n` (nonce, each
   accepted once). Roles map as `besitzer` → admin, `verwalter` → bookmarks, `station` →
@@ -313,7 +313,7 @@ Both return JSON with `Access-Control-Allow-Origin: *`.
 
 ## WebSocket protocol
 
-Endpoint `ws` relative to the page (`ws://<host>:8073/ws`).
+Endpoint `ws` relative to the page (`ws://<host>:8074/ws`).
 
 Client to server (JSON text frames):
 

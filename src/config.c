@@ -98,7 +98,7 @@ static const char *default_bands[] = {
 void config_defaults(config_t *c)
 {
     memset(c, 0, sizeof(*c));
-    c->port = 8073;
+    c->port = 8074;   /* 8073 is afu-remote's page, which tunnels this one */
     copy(c->www, sizeof(c->www), "/opt/r2t2sdr/www");
     copy(c->ifname, sizeof(c->ifname), "rad0");
     copy(c->title, sizeof(c->title), "R2T2 WebSDR");
