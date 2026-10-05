@@ -46,7 +46,7 @@
 
 #define MAX_VIEWS      (MAX_BANDS + NRX)
 #define CLIENT_TIMEOUT 30
-#define VERSION        "0.3.1"
+#define VERSION        "0.3.2"
 #define LOGIN_FAILS    5      /* failed logins per address ... */
 #define LOGIN_LOCK_S   60     /* ... before it is locked for this long */
 
@@ -2554,7 +2554,7 @@ int main(int argc, char **argv)
     }
 
     int sfd = hw_open_stream(cfg.ifname);
-    int lfd = net_listen(cfg.port);
+    int lfd = net_listen(cfg.listen, cfg.port);
     if (sfd < 0 || lfd < 0)
         return 1;
     logmsg("r2t2sdr %s listening on port %d, %d bands, www %s", VERSION, cfg.port, cfg.nbands, cfg.www);

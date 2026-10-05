@@ -159,6 +159,7 @@ static int load_file(config_t *c, const char *path, int station_only)
             continue;
 
         if (!strcmp(k, "port"))                c->port = atoi(v);
+        else if (!strcmp(k, "listen"))         copy(c->listen, sizeof(c->listen), v);
         else if (!strcmp(k, "state_dir"))      copy(c->state_dir, sizeof(c->state_dir), v);
         else if (!strcmp(k, "access"))         c->access = !strcmp(v, "login");
         else if (!strcmp(k, "chat"))           c->chat = !strcmp(v, "off") ? 0 : !strcmp(v, "login") ? 1 : 2;

@@ -22,7 +22,7 @@ static void set_nonblock(int fd)
     fcntl(fd, F_SETFL, fcntl(fd, F_GETFL) | O_NONBLOCK);
 }
 
-int net_listen(int port)
+int net_listen(const char *addr, int port)
 {
     int fd = socket(AF_INET, SOCK_STREAM, 0);
     if (fd < 0) {
@@ -35,6 +35,11 @@ int net_listen(int port)
     memset(&a, 0, sizeof(a));
     a.sin_family = AF_INET;
     a.sin_addr.s_addr = htonl(INADDR_ANY);
+    if (addr && *addr && inet_pton(AF_INET, addr, &a.sin_addr) != 1) {
+        fprintf(stderr, "listen: %s is no IPv4 address\n", addr);
+        close(fd);
+        return -1;
+    }
     a.sin_port = htons(port);
     if (bind(fd, (struct sockaddr *)&a, sizeof(a)) < 0 || listen(fd, 16) < 0) {
         perror("bind/listen");

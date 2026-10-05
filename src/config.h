@@ -13,6 +13,7 @@ typedef struct {
 
 typedef struct {
     int port;
+    char listen[64];   /* IPv4 address to listen on, "" = all (afu-remote: 127.0.0.1) */
     char www[256];
     char ifname[16];
     char title[96];

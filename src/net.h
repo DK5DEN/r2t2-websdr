@@ -67,7 +67,7 @@ typedef struct {
 
 void net_http_reply(client_t *c, int code, const char *ctype, const void *body, size_t n);
 
-int net_listen(int port);
+int net_listen(const char *addr, int port);
 int net_accept(int lfd, char *ip, size_t iplen);
 void net_queue(client_t *c, const void *data, size_t n);
 int net_ws_send(client_t *c, int opcode, const void *data, size_t n, int droppable);

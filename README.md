@@ -300,6 +300,10 @@ from r2t2sdr. Python stays out of the data path.
   write one JSON line, read one back. `{"cmd":"status"}` answers like the `status` message,
   `{"cmd":"online"}` like `online`, where each entry carries `via` (`afu-remote` or `direct`).
 
+- **`listen = 127.0.0.1`** binds the WebSocket to that address only (default: all). afu-remote
+  sets it when it starts the engine itself (built into afu-remote's R2T2 program, `eingebaut =
+  true` there): then only afu-remote reaches the engine, browsers come through its tunnel.
+
 `tools/engine-setup-r2t2.sh` creates the secret and adds these keys on the device.
 
 ## HTTP API
